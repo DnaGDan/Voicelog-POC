@@ -1,0 +1,2565 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Voice-first Geo Logging PoC (v4 - In-browser LLM)</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 16px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .stack { display: grid; gap: 12px; }
+    .card { border: 1px solid #ddd; border-radius: 12px; padding: 12px; }
+    button { padding: 10px 12px; border-radius: 10px; border: 1px solid #ccc; background: #f7f7f7; cursor: pointer; }
+    button.primary { background: #111; color: #fff; border-color: #111; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    textarea { width: 100%; min-height: 120px; border-radius: 10px; border: 1px solid #ccc; padding: 10px; }
+    pre { background: #0b1020; color: #e6e6e6; padding: 10px; border-radius: 10px; overflow: auto; }
+    .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; border: 1px solid #ccc; margin-right: 6px; font-size: 12px; margin-bottom: 6px; }
+    .warn { border-color: #c97; }
+    .ok { border-color: #8c8; }
+    .muted { color: #666; font-size: 13px; }
+    .list { display: grid; gap: 8px; }
+    .small { font-size: 12px; color: #666; }
+    .debug { white-space: pre-wrap; background:#fff7e6; border:1px solid #f0d39a; padding:10px; border-radius:10px; }
+    select { padding: 10px 12px; border-radius: 10px; border: 1px solid #ccc; background: #fff; }
+    input { padding: 10px 12px; border-radius: 10px; border: 1px solid #ccc; background: #fff; }
+    .row3 { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+    .meter { width: 160px; height: 10px; border-radius: 999px; background: #eee; border: 1px solid #ccc; overflow: hidden; }
+    .meter-fill { height: 100%; width: 0%; background: linear-gradient(90deg, #6ab04c, #f9ca24, #eb4d4b); transition: width 0.08s linear; }
+    .progress { width: 180px; height: 10px; border-radius: 999px; background: #eee; border: 1px solid #ccc; overflow: hidden; }
+    .progress-fill { height: 100%; width: 0%; background: linear-gradient(90deg, #1e90ff, #6ab04c); transition: width 0.2s linear; }
+    .progress-fill.running { width: 45%; transform: translateX(-120%); animation: progressMove 1.1s ease-in-out infinite; }
+    .log-wrap { border: 1px solid #eee; border-radius: 12px; padding: 8px; background: #fafafa; }
+    .log-svg { width: 100%; height: 1560px; display: block; background: #fff; border-radius: 10px; border: 1px solid #eee; }
+    .log-legend { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+    .review-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .review-table th, .review-table td { border: 1px solid #ddd; padding: 6px; vertical-align: top; }
+    .review-table th { background: #f5f5f5; text-align: left; }
+    .review-muted { color: #666; font-size: 12px; }
+    .review-badge { display:inline-block; padding:2px 6px; border-radius: 6px; border:1px solid #ccc; font-size:11px; }
+    @keyframes progressMove { 0% { transform: translateX(-120%); } 100% { transform: translateX(220%); } }
+    @media (max-width: 900px) { .row { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <h2>Voice-first Geo Logging PoC (v4)</h2>
+  <p class="muted">
+    This version can run an LLM <em>in your browser</em> using WebLLM. No API keys, no auth.
+    The price you pay is performance: first load can be hundreds of MB and Android phones vary wildly.
+  </p>
+
+  <div class="card" style="margin-bottom:12px;">
+    <h3>0) LLM options</h3>
+    <div class="row3" style="margin-bottom:8px;">
+      <label class="small" for="modelSel"><strong>Local model</strong></label>
+      <select id="modelSel">
+        <option value="Phi-3-mini-4k-instruct-q4f16_1-MLC">Phi-3-mini (fast-ish, decent)</option>
+        <option value="Llama-3.2-1B-Instruct-q4f16_1-MLC">Llama 3.2 1B (small)</option>
+        <option value="Llama-3.1-8B-Instruct-q4f16_1-MLC">Llama 3.1 8B (big, slow)</option>
+      </select>
+      <button id="btnLoadLLM" class="primary" type="button">Load local LLM</button>
+    </div>
+    <div class="muted" id="llmStatus">Local LLM: not loaded</div>
+    <div class="small" id="llmProgress"></div>
+    <hr style="border:none; border-top:1px solid #eee; margin:10px 0;">
+    <div class="row3" style="margin-bottom:8px;">
+      <label class="small" for="remoteModel"><strong>Online model</strong></label>
+      <select id="remoteModel">
+        <option value="gpt-4o-mini">GPT-4o mini (fast)</option>
+        <option value="gpt-4o">GPT-4o (best)</option>
+        <option value="gpt-4.1-mini">GPT-4.1 mini</option>
+        <option value="gpt-4.1">GPT-4.1</option>
+      </select>
+      <label class="small" for="remoteApiKey"><strong>API key</strong></label>
+      <input id="remoteApiKey" type="password" autocomplete="off" placeholder="sk-..." style="min-width:240px;">
+      <label class="small" for="remoteBase"><strong>API base</strong></label>
+      <input id="remoteBase" type="text" value="https://api.openai.com/v1" style="min-width:240px;">
+      <button id="btnEnableRemote" type="button">Enable online</button>
+      <button id="btnDisableRemote" type="button" disabled>Disable online</button>
+    </div>
+    <div class="small" id="remoteStatus">Online: disabled</div>
+    <div class="small muted">ChatGPT sign-in is not available in-browser. Use an API key or a proxy server.</div>
+  </div>
+
+  <div class="row">
+    <div class="stack">
+      <div class="card">
+      <h3>1) Capture</h3>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
+        <button id="btnStart" class="primary" type="button">Start voice</button>
+        <button id="btnStop" type="button" disabled>Stop</button>
+        <button id="btnMicTest" type="button">Mic test</button>
+        <button id="btnClear" type="button">Clear</button>
+      </div>
+      <div class="row3" style="margin-bottom:8px;">
+        <label class="small" for="entryType"><strong>Entry type</strong></label>
+        <select id="entryType">
+          <option value="auto">Auto</option>
+          <option value="strata">Strata</option>
+          <option value="sample">Sample</option>
+          <option value="water">Water</option>
+          <option value="test">In-situ test</option>
+          <option value="note">Note</option>
+        </select>
+        <label class="small" for="holeId"><strong>Hole ID</strong></label>
+        <input id="holeId" type="text" value="EH1"/>
+      </div>
+      <textarea id="txtTranscript" placeholder="Speak, or type here. e.g. 'Dark brown topsoil from ground level to 0.2m. Underlain by soft clay to point eight metres.'"></textarea>
+      <div class="row3" style="margin-top:8px;">
+        <div class="meter" aria-label="Mic level"><div id="micLevel" class="meter-fill"></div></div>
+        <div class="small" id="micStatus">Mic: idle</div>
+      </div>
+      <div class="muted" id="status">Status: idle</div>
+      <div class="small" id="diag"></div>
+      </div>
+
+      <div class="card">
+      <h3>2) Extract + prompt</h3>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
+        <button id="btnAnalyze" class="primary" type="button">Analyze (best guess)</button>
+        <button id="btnConfirm" type="button" disabled>Confirm entry</button>
+        <button id="btnExport" type="button" disabled>Export JSON</button>
+      </div>
+      <div class="row3" style="margin-bottom:8px;">
+        <div class="progress" aria-label="AI analysis progress"><div id="aiProgress" class="progress-fill"></div></div>
+        <div class="small" id="aiStatus">AI: idle</div>
+        <button id="btnUseLocal" type="button" disabled>Use local</button>
+        <button id="btnCancelAI" type="button" disabled>Cancel AI</button>
+      </div>
+
+      <div id="pills"></div>
+      <h4>Prompts</h4>
+      <div class="list" id="prompts"></div>
+      <h4>Review</h4>
+      <div id="review" class="review-muted">Nothing to review yet.</div>
+    </div>
+  </div>
+
+    <div class="card">
+      <h3>Exploratory hole log</h3>
+      <div class="log-wrap">
+        <svg id="logSvg" class="log-svg" viewBox="0 0 700 520" role="img" aria-label="Exploratory hole log"></svg>
+      </div>
+      <div class="log-legend small">
+        <span class="pill ok">Strata</span>
+        <span class="pill">Sample</span>
+        <span class="pill">Water</span>
+        <span class="pill">Test</span>
+      </div>
+      <div class="small muted">Log updates when you confirm an entry.</div>
+      <pre id="logData" style="margin-top:8px;">{}</pre>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:12px;">
+    <h3>Structured output</h3>
+    <pre id="out">{}</pre>
+  </div>
+
+  <div class="card" style="margin-top:12px;">
+    <h3>Confirmed entries</h3>
+    <div class="row3" style="margin-bottom:8px;">
+      <button id="btnCancelEdit" type="button" disabled>Cancel edit</button>
+    </div>
+    <div class="list" id="entryList"></div>
+    <pre id="entries">[]</pre>
+  </div>
+
+  <div class="card" style="margin-top:12px;">
+    <h3>Debug</h3>
+    <div class="debug" id="debug">Loading.</div>
+  </div>
+
+<script type="module">
+  import { CreateMLCEngine } from "https://esm.run/@mlc-ai/web-llm";
+
+  const $ = (id) => document.getElementById(id);
+  const debug = (msg) => {
+    const el = $("debug");
+    el.textContent = (el.textContent === "Loading." ? "" : el.textContent + "\\n") + msg;
+  };
+
+  window.addEventListener("error", (e) => {
+    debug("JS ERROR: " + (e.message || e.type) + " @ " + (e.filename || "") + ":" + (e.lineno || "") );
+  });
+  window.addEventListener("unhandledrejection", (e) => {
+    debug("PROMISE REJECTION: " + (e.reason?.message || String(e.reason)));
+  });
+
+  // ---------------- State ----------------
+  const state = {
+    current: null,
+    entries: [],
+    editIndex: null,
+    log: {
+      hole_id: "EH1",
+      strata: [],
+      samples: [],
+      water: [],
+      tests: [],
+      notes: []
+    }
+  };
+  const aiState = { inFlight: false, canceled: false, requestId: 0, lastLocal: null, abortController: null };
+  const remoteState = {
+    enabled: false,
+    apiKey: "",
+    model: "gpt-4o-mini",
+    baseUrl: "https://api.openai.com/v1"
+  };
+  const setStatus = (msg) => { $("status").textContent = "Status: " + msg; };
+  const setDiag = (msg) => { $("diag").textContent = msg || ""; };
+  const setMicStatus = (msg) => {
+    const el = $("micStatus");
+    if (el) el.textContent = msg || "";
+  };
+  const setAiStatus = (msg) => {
+    const el = $("aiStatus");
+    if (el) el.textContent = msg || "";
+  };
+  const setRemoteStatus = (msg) => {
+    const el = $("remoteStatus");
+    if (el) el.textContent = "Online: " + (msg || "");
+  };
+  const setMicLevel = (pct) => {
+    const el = $("micLevel");
+    if (!el) return;
+    const clamped = Math.max(0, Math.min(100, pct));
+    el.style.width = clamped.toFixed(0) + "%";
+  };
+  const setAiProgressRunning = (running) => {
+    const el = $("aiProgress");
+    if (!el) return;
+    if (running) el.classList.add("running");
+    else el.classList.remove("running");
+    if (!running) el.style.width = "0%";
+  };
+  const setAiButtons = (enabled) => {
+    const useLocal = $("btnUseLocal");
+    const cancelAI = $("btnCancelAI");
+    if (useLocal) useLocal.disabled = !enabled;
+    if (cancelAI) cancelAI.disabled = !enabled;
+  };
+  const beginAiRun = () => {
+    aiState.inFlight = true;
+    aiState.canceled = false;
+    aiState.abortController = null;
+    setAiStatus("AI: running");
+    setAiProgressRunning(true);
+    setAiButtons(true);
+  };
+  const endAiRun = (statusText) => {
+    aiState.inFlight = false;
+    aiState.abortController = null;
+    setAiProgressRunning(false);
+    setAiButtons(false);
+    setAiStatus(statusText || "AI: idle");
+  };
+  const cancelAiRun = (reason) => {
+    if (!aiState.inFlight) return;
+    aiState.canceled = true;
+    aiState.inFlight = false;
+    if (aiState.abortController) {
+      aiState.abortController.abort();
+      aiState.abortController = null;
+    }
+    setAiProgressRunning(false);
+    setAiButtons(false);
+    setAiStatus(reason || "AI: canceled");
+    if (aiState.lastLocal) {
+      state.current = aiState.lastLocal;
+      $("out").textContent = JSON.stringify(state.current, null, 2);
+      renderPillsFromParsed(state.current.parsed);
+      renderPrompts(state.current.prompts || []);
+      renderReview(state.current.parsed);
+    }
+  };
+
+  // ---------------- Basic rules parsing ----------------
+  const normalizeText = (s) => (s || "").trim().replace(/\s+/g, " ");
+
+  function formatDepthValue(v) {
+    if (typeof v !== "number" || !isFinite(v)) return "?";
+    const s = v.toFixed(2);
+    return s.replace(/\.00$/, ".0").replace(/(\.\d)0$/, "$1");
+  }
+
+  function formatDepthRange(from, to) {
+    return formatDepthValue(from) + "-" + formatDepthValue(to) + " m";
+  }
+
+  function formatDepthSingle(depth) {
+    return formatDepthValue(depth) + " m";
+  }
+  const isFiniteNumber = (v) => typeof v === "number" && isFinite(v);
+
+  function preprocessTranscript(text) {
+    let t = (text || "").toLowerCase();
+    t = t.replace(/[--]/g, "-");
+    t = t.replace(/\b(ground\s*level|gl|surface\s*level|surface|ground\s*surface)\b/g, "0.0");
+    t = t.replace(/\beoh\b/g, "end of hole");
+    // numeric "point 8" -> "0.8"
+    t = t.replace(/\bpoint\s+(\d+)\b/g, "0.$1");
+
+    const wordToDigit = {
+      zero: "0", one: "1", two: "2", three: "3", four: "4",
+      five: "5", six: "6", seven: "7", eight: "8", nine: "9"
+    };
+    // "point eight" -> "0.8"
+    t = t.replace(/\bpoint\s+(zero|one|two|three|four|five|six|seven|eight|nine)\b/g,
+      (_, w) => "0." + wordToDigit[w]
+    );
+    // "two point five" -> "2.5"
+    t = t.replace(
+      /\b(zero|one|two|three|four|five|six|seven|eight|nine)\s+point\s+(zero|one|two|three|four|five|six|seven|eight|nine)\b/g,
+      (_, a, b) => wordToDigit[a] + "." + wordToDigit[b]
+    );
+    return t;
+  }
+
+  function extractDepthsSingle(text) {
+    const t = preprocessTranscript(text);
+
+    const m0 = t.match(/\bfrom\s+(\d+(?:\.\d+)?)\s*(?:m|metres|meters)?\s+(?:to|down\s+to)\s+end\s+of\s+hole\s+at\s+(\d+(?:\.\d+)?)\s*(?:m|metres|meters)?\b/);
+    if (m0) return { from: parseFloat(m0[1]), to: parseFloat(m0[2]), basis: "from-to end of hole" };
+
+    const m0b = t.match(/\bbetween\s+(\d+(?:\.\d+)?)\s*(?:m|metres|meters)?\s+and\s+(\d+(?:\.\d+)?)\s*(?:m|metres|meters)?\b/);
+    if (m0b) return { from: parseFloat(m0b[1]), to: parseFloat(m0b[2]), basis: "between phrase" };
+
+    const m0c = t.match(/\bto\s+end\s+of\s+hole\s+at\s+(\d+(?:\.\d+)?)\s*(?:m|metres|meters)?\b/);
+    if (m0c) return { from: null, to: parseFloat(m0c[1]), basis: "to end of hole" };
+
+    const m0d = t.match(/\bend\s+of\s+hole\s+(?:at\s+)?(\d+(?:\.\d+)?)\s*(?:m|metres|meters)?\b/);
+    if (m0d) return { from: null, to: parseFloat(m0d[1]), basis: "end of hole" };
+
+    const m1 = t.match(/\bfrom\s+(\d+(?:\.\d+)?)\s*(?:m|metres|meters)?\s+(?:to|down\s+to)\s+(\d+(?:\.\d+)?)\s*(?:m|metres|meters)?\b/);
+    if (m1) return { from: parseFloat(m1[1]), to: parseFloat(m1[2]), basis: "from-to phrase" };
+
+    const m1b = t.match(/\b(\d+(?:\.\d+)?)\s*(?:m|metres|meters)?\s+(?:to|down\s+to)\s+(\d+(?:\.\d+)?)\s*(?:m|metres|meters)?\b/);
+    if (m1b) return { from: parseFloat(m1b[1]), to: parseFloat(m1b[2]), basis: "X to Y phrase" };
+
+    const m2 = t.match(/\b(\d+(?:\.\d+)?)\s*(?:m|metres|meters)?\s*-\s*(\d+(?:\.\d+)?)\s*(?:m|metres|meters)?\b/);
+    if (m2) return { from: parseFloat(m2[1]), to: parseFloat(m2[2]), basis: "range hyphen" };
+
+    const m3 = t.match(/\b(?:to|down\s+to)\s+(\d+(?:\.\d+)?)\s*(?:m|metres|meters)?\b/);
+    if (m3) return { from: null, to: parseFloat(m3[1]), basis: "to-only phrase" };
+
+    return { from: null, to: null, basis: "none" };
+  }
+
+  function extractDepthMarker(text) {
+    const t = preprocessTranscript(text);
+    const m1 = t.match(/\b(?:at|@|depth|around|approx(?:imately)?|about)\s+(\d+(?:\.\d+)?)\s*(?:m|metres|meters)?\b/);
+    if (m1) return { depth: parseFloat(m1[1]), basis: "at/depth phrase" };
+
+    const m2 = t.match(/\b(\d+(?:\.\d+)?)\s*(?:m|metres|meters)\s*(?:bgl|below\s+ground\s+level|depth)\b/);
+    if (m2) return { depth: parseFloat(m2[1]), basis: "bgl phrase" };
+
+    const m3 = t.match(/\b(\d+(?:\.\d+)?)\s*(?:m|metres|meters)\b/);
+    if (m3) return { depth: parseFloat(m3[1]), basis: "number m" };
+
+    return { depth: null, basis: "none" };
+  }
+
+  function guessMaterial(text) {
+    const t = text.toLowerCase();
+    const materials = [];
+    const rules = [
+      ["made ground", /\bmade\s+ground\b|\bfill\b/],
+      ["topsoil", /\btop\s*soil\b|\btopsoil\b/],
+      ["clay", /\bclay\b/],
+      ["silt", /\bsilt\b/],
+      ["sand", /\bsand\b/],
+      ["gravel", /\bgravel\b/],
+      ["cobbles", /\bcobble(?:s)?\b/],
+      ["boulders", /\bboulder(?:s)?\b/],
+      ["chalk", /\bchalk\b/],
+      ["peat", /\bpeat\b/],
+      ["rock", /\bbedrock\b|\brock\b|\bsandstone\b|\blimestone\b|\bgranite\b|\bshale\b|\bmudstone\b|\bsiltstone\b|\bbasalt\b/],
+    ];
+    for (const [name, re] of rules) if (re.test(t)) materials.push(name);
+    return materials.length ? materials : ["unknown"];
+  }
+
+  function detectStrength(text) {
+    const t = text.toLowerCase();
+    const range = t.match(/\b(very\s+soft|soft|firm|stiff|very\s+stiff|hard)\s+to\s+(very\s+soft|soft|firm|stiff|very\s+stiff|hard)\b/);
+    if (range) return range[1] + " to " + range[2];
+    if (/\bvery\s+soft\b/.test(t)) return "very soft";
+    if (/\bvery\s+stiff\b/.test(t)) return "very stiff";
+    if (/\bhard\b/.test(t)) return "hard";
+    if (/\bstiff\b/.test(t)) return "stiff";
+    if (/\bfirm\b/.test(t)) return "firm";
+    if (/\bsoft\b/.test(t)) return "soft";
+    return null;
+  }
+
+  function detectMoisture(text) {
+    const t = text.toLowerCase();
+    if (/\bvery\s+wet\b|\bsaturated\b/.test(t)) return "wet";
+    if (/\bwet\b/.test(t)) return "wet";
+    if (/\bslightly\s+moist\b/.test(t)) return "slightly moist";
+    if (/\bdamp\b/.test(t)) return "moist";
+    if (/\bmoist\b/.test(t)) return "moist";
+    if (/\bdry\b/.test(t)) return "dry";
+    return null;
+  }
+
+  function detectDensity(text) {
+    const t = text.toLowerCase();
+    const range = t.match(/\b(very\s+loose|loose|medium\s+dense|dense|very\s+dense)\s+to\s+(very\s+loose|loose|medium\s+dense|dense|very\s+dense)\b/);
+    if (range) return range[1] + " to " + range[2];
+    if (/\bvery\s+loose\b/.test(t)) return "very loose";
+    if (/\bvery\s+dense\b/.test(t)) return "very dense";
+    if (/\bmedium\s+dense\b/.test(t)) return "medium dense";
+    if (/\bdense\b/.test(t)) return "dense";
+    if (/\bloose\b/.test(t)) return "loose";
+    return null;
+  }
+
+  function detectPlasticity(text) {
+    const t = text.toLowerCase();
+    if (/\bhigh\s+plasticity\b/.test(t)) return "high";
+    if (/\bintermediate\s+plasticity\b|\bmedium\s+plasticity\b/.test(t)) return "medium";
+    if (/\blow\s+plasticity\b/.test(t)) return "low";
+    return null;
+  }
+
+  function detectQualifiers(text) {
+    const t = text.toLowerCase();
+    const q = { strength: detectStrength(t), moisture: detectMoisture(t), odor: null, contamination: false, uncertainty: false };
+
+    if (/\bsmell(?:s|ing)?\b|\bodou?r\b|\bsulphurous\b|\bh2s\b/.test(t)) q.odor = "noted";
+    if (/\bhydrocarbon\b|\boil\b|\bdiesel\b|\btarry\b|\basbestos\b|\bcontaminat(?:ed|ion)\b/.test(t)) q.contamination = true;
+
+    if (/\bmaybe\b|\bperhaps\b|\bi\s+think\b|\bnot\s+sure\b|\bpossibly\b|\bcould\s+be\b|\blikely\b/.test(t)) q.uncertainty = true;
+
+    return q;
+  }
+
+  const reTypeTest = /\b(spt|standard\s+penetration|vane|cpt|cone\s+penetration|dcp|pressuremeter|plate\s+load|in[- ]?situ|permeability)\b/;
+  const reTypeSample = /\b(sample|sampling|u\d+|u\s*100|u\s*38|undisturbed|disturbed|bulk|bag|jar|block|split\s*spoon)\b/;
+  const reTypeWater = /\b(water\s+level|water\s+strike|standing\s+water|seepage|seep|inflow|groundwater|wl)\b/;
+  const reTypeStrata = /\b(clay|silt|sand|gravel|cobble|boulder|topsoil|made\s+ground|fill|peat|rock|chalk)\b/;
+
+  function detectTypeSignals(text) {
+    const t = (text || "").toLowerCase();
+    const signals = {
+      test: reTypeTest.test(t),
+      sample: reTypeSample.test(t),
+      water: reTypeWater.test(t),
+      strata: reTypeStrata.test(t)
+    };
+    const primaryCount = [signals.test, signals.sample, signals.water].filter(Boolean).length;
+    const totalCount = [signals.test, signals.sample, signals.water, signals.strata].filter(Boolean).length;
+    return { ...signals, primaryCount, totalCount };
+  }
+
+  function detectEntryType(text, override, options = {}) {
+    if (override && override !== "auto") return override;
+    const signals = detectTypeSignals(text);
+    const allowMixed = options.allowMixed !== false;
+    const hasMultipleDepths = countDepthMarkers(text) >= 2;
+    const mixedLikely = allowMixed && (signals.primaryCount > 1 || (signals.primaryCount === 1 && signals.strata && hasMultipleDepths));
+    if (mixedLikely) return "mixed";
+    if (signals.test) return "test";
+    if (signals.sample) return "sample";
+    if (signals.water) return "water";
+    if (signals.strata) return "strata";
+    return "note";
+  }
+
+  function splitStrataSegments(raw) {
+    let t = raw || "";
+    const markers = [
+      /\bunderlain\s+by\b/gi,
+      /\boverlain\s+by\b/gi,
+      /\boverlies\b/gi,
+      /\boverlying\b/gi,
+      /\bunderlying\b/gi,
+      /\bbeneath\b/gi,
+      /\bbelow\b/gi,
+      /\bfollowed\s+by\b/gi,
+      /\bthen\b/gi,
+      /\bunderlain\b/gi
+    ];
+    for (const re of markers) t = t.replace(re, "||");
+    t = t.replace(/\.(?=\s+[a-zA-Z])/g, "||");
+    return t.split("||").map(s => s.trim()).filter(Boolean);
+  }
+
+  function parseStrataLayersFromText(raw) {
+    const segments = splitStrataSegments(raw);
+    const layers = [];
+    let lastTo = getLastStratumTo(state.log);
+    for (const segment of segments) {
+      const depth = extractDepthsSingle(segment);
+      const materials = guessMaterial(segment);
+      const qualifiers = detectQualifiers(segment);
+      const density = detectDensity(segment);
+      const color = extractColor(segment);
+      const structure = extractStructure(segment);
+      const plasticity = detectPlasticity(segment);
+      const bs5930 = buildBS5930({ raw: segment, materials, qualifiers, density, color, structure, plasticity });
+      let from = depth.from;
+      let to = depth.to;
+      let inferred = false;
+      if (from == null && to != null && lastTo != null) {
+        from = lastTo;
+        inferred = true;
+      }
+      if (from != null && to != null && to < from) {
+        const tmp = from;
+        from = to;
+        to = tmp;
+        inferred = true;
+      }
+      if (to != null) lastTo = to;
+      layers.push({
+        from,
+        to,
+        material: bs5930.primary || materials[0]?.toUpperCase() || "UNKNOWN",
+        descriptors: bs5930.secondary || [],
+        bs5930,
+        raw: segment,
+        confidence: 1,
+        inferred_from_context: inferred
+      });
+    }
+    return layers;
+  }
+
+  function extractColor(text) {
+    const t = text.toLowerCase();
+    const combo = t.match(/\b(dark|light|pale|medium)\s+(brown|grey|gray|red|yellow|green|blue|black)\b/);
+    if (combo) return combo[1] + " " + (combo[2] === "gray" ? "grey" : combo[2]);
+    const multi = t.match(/\b(reddish\s+brown|yellowish\s+brown|greyish\s+brown)\b/);
+    if (multi) return multi[1];
+    const single = t.match(/\b(brown|grey|gray|red|yellow|green|blue|black|white|pink|cream|beige|buff|orange)\b/);
+    if (single) return single[1] === "gray" ? "grey" : single[1];
+    return null;
+  }
+
+  function extractStructure(text) {
+    const t = text.toLowerCase();
+    const structures = [];
+    const rules = [
+      ["fissured", /\bfissured\b/],
+      ["laminated", /\blaminated\b/],
+      ["bedded", /\bbedded\b|\bbanded\b/],
+      ["layered", /\blayered\b/],
+      ["massive", /\bmassive\b/],
+      ["mottled", /\bmottled\b|\bvariegated\b/],
+      ["rootlets", /\brootlets?\b/],
+      ["shells", /\bshells?\b/],
+      ["fractured", /\bfractured\b/],
+      ["slickensided", /\bslickensided\b/]
+    ];
+    for (const [name, re] of rules) if (re.test(t)) structures.push(name);
+    return structures;
+  }
+
+  function extractOtherFeatures(text) {
+    const t = text.toLowerCase();
+    const features = [];
+    const rules = [
+      ["brick fragments", /\bbrick\b/],
+      ["concrete fragments", /\bconcrete\b/],
+      ["ash", /\bash\b/],
+      ["slag", /\bslag\b/],
+      ["glass", /\bglass\b/],
+      ["coal", /\bcoal\b/],
+      ["roots", /\broots?\b/]
+    ];
+    for (const [name, re] of rules) if (re.test(t)) features.push(name);
+    return features;
+  }
+
+  function selectPrimaryMaterial(materials, text) {
+    const t = text.toLowerCase();
+    const rockMatch = t.match(/\b(sandstone|limestone|mudstone|siltstone|shale|granite|basalt|chalk)\b/);
+    if (rockMatch) return rockMatch[1].toUpperCase();
+    if (/\bmade\s+ground\b|\bfill\b/.test(t)) return "MADE GROUND";
+    if (/\btop\s*soil\b|\btopsoil\b/.test(t)) return "TOPSOIL";
+    if (/\bpeat\b/.test(t)) return "PEAT";
+    if (/\bchalk\b/.test(t)) return "CHALK";
+    const order = ["clay", "silt", "sand", "gravel", "cobbles", "boulders", "rock"];
+    for (const key of order) if (materials.includes(key)) return key.toUpperCase();
+    return null;
+  }
+
+  function extractSecondaryDescriptors(text, primary, materials) {
+    const t = text.toLowerCase();
+    const secondary = new Set();
+    const adjRules = [
+      ["sandy", /\bsandy\b|\bwith\s+sand\b/],
+      ["gravelly", /\bgravelly\b|\bwith\s+gravel\b/],
+      ["silty", /\bsilty\b|\bwith\s+silt\b/],
+      ["clayey", /\bclayey\b|\bwith\s+clay\b/],
+      ["cobbly", /\bcobbly\b|\bwith\s+cobbles\b/],
+      ["bouldery", /\bbouldery\b|\bwith\s+boulders\b/],
+      ["chalky", /\bchalky\b|\bwith\s+chalk\b/],
+      ["peaty", /\bpeaty\b|\bwith\s+peat\b/],
+      ["organic", /\borganic\b/]
+    ];
+    for (const [name, re] of adjRules) if (re.test(t)) secondary.add(name);
+
+    const materialAdjMap = {
+      sand: "sandy",
+      gravel: "gravelly",
+      silt: "silty",
+      clay: "clayey",
+      cobbles: "cobbly",
+      boulders: "bouldery",
+      chalk: "chalky",
+      peat: "peaty"
+    };
+    for (const mat of materials) {
+      if (materialAdjMap[mat]) secondary.add(materialAdjMap[mat]);
+    }
+
+    const primaryBaseMap = {
+      "MADE GROUND": "made ground",
+      "TOPSOIL": "topsoil",
+      "CLAY": "clay",
+      "SILT": "silt",
+      "SAND": "sand",
+      "GRAVEL": "gravel",
+      "COBBLES": "cobbles",
+      "BOULDERS": "boulders",
+      "PEAT": "peat",
+      "CHALK": "chalk",
+      "ROCK": "rock"
+    };
+    const primaryBase = primary ? (primaryBaseMap[primary] || primary.toLowerCase()) : null;
+    const adjBaseMap = {
+      sandy: "sand",
+      gravelly: "gravel",
+      silty: "silt",
+      clayey: "clay",
+      cobbly: "cobbles",
+      bouldery: "boulders",
+      chalky: "chalk",
+      peaty: "peat"
+    };
+    if (primaryBase) {
+      for (const adj of Array.from(secondary)) {
+        if (adjBaseMap[adj] === primaryBase) secondary.delete(adj);
+      }
+    }
+    return Array.from(secondary);
+  }
+
+  function normalizeMoisture(moisture) {
+    if (!moisture) return null;
+    if (moisture === "wet/saturated") return "wet";
+    return moisture;
+  }
+
+  function buildBS5930(parsed) {
+    const rawText = parsed.raw || "";
+    const materials = parsed.materials && parsed.materials.length ? parsed.materials : guessMaterial(rawText);
+    const primary = selectPrimaryMaterial(materials, rawText);
+    const secondary = extractSecondaryDescriptors(rawText, primary, materials);
+    const moisture = normalizeMoisture(parsed.qualifiers?.moisture || detectMoisture(rawText));
+    const isCohesive = primary === "CLAY" || primary === "SILT";
+    const isGranular = primary === "SAND" || primary === "GRAVEL" || primary === "COBBLES" || primary === "BOULDERS";
+    const consistency = isCohesive ? (parsed.qualifiers?.strength || detectStrength(rawText)) : null;
+    const density = isGranular ? (parsed.density || detectDensity(rawText)) : null;
+    const color = parsed.color || extractColor(rawText);
+    const structure = parsed.structure || extractStructure(rawText);
+    const plasticity = parsed.plasticity || detectPlasticity(rawText);
+    const other = parsed.other || extractOtherFeatures(rawText);
+
+    const head = [];
+    if (color) head.push(color);
+    if (secondary.length) head.push(secondary.join(" "));
+    if (primary) head.push(primary);
+    const tail = [];
+    if (consistency) tail.push(consistency);
+    if (density) tail.push(density);
+    if (moisture) tail.push(moisture);
+    if (plasticity) tail.push(plasticity + " plasticity");
+    if (structure.length) tail.push(structure.join(", "));
+    if (other.length) tail.push(other.join(", "));
+
+    let description = head.join(" ");
+    if (tail.length) description = description ? (description + ", " + tail.join(", ")) : tail.join(", ");
+    if (!description) description = "Unclassified";
+
+    return {
+      primary,
+      secondary,
+      color,
+      moisture,
+      consistency,
+      density,
+      plasticity,
+      structure,
+      other,
+      description
+    };
+  }
+
+  function getLastStratumTo(log) {
+    const strata = log?.strata || [];
+    for (let i = strata.length - 1; i >= 0; i--) {
+      const val = strata[i].to;
+      if (typeof val === "number" && isFinite(val)) return val;
+    }
+    return null;
+  }
+
+  function inferLayerBounds(layer, log) {
+    let from = layer.from;
+    let to = layer.to;
+    let inferred = false;
+    const lastTo = getLastStratumTo(log);
+    if (from == null && to != null && lastTo != null) {
+      from = lastTo;
+      inferred = true;
+    }
+    if (from != null && to != null && to < from) {
+      const tmp = from;
+      from = to;
+      to = tmp;
+      inferred = true;
+    }
+    return { from, to, inferred };
+  }
+
+  function buildLayerFromParsed(parsed) {
+    const depth = parsed.depth || { from: null, to: null };
+    const bs5930 = parsed.bs5930 || buildBS5930(parsed);
+    const materialFallback = parsed.materials && parsed.materials.length ? parsed.materials[0].toUpperCase() : null;
+    const layer = {
+      from: depth.from,
+      to: depth.to,
+      material: bs5930.primary || materialFallback || "UNKNOWN",
+      descriptors: bs5930.secondary || [],
+      bs5930,
+      raw: parsed.raw,
+      confidence: 1,
+      inferred_from_context: false
+    };
+    const inferred = inferLayerBounds(layer, state.log);
+    layer.from = inferred.from;
+    layer.to = inferred.to;
+    layer.inferred_from_context = inferred.inferred;
+    if (parsed.depth) {
+      parsed.depth.from = inferred.from;
+      parsed.depth.to = inferred.to;
+    }
+    return layer;
+  }
+
+  function detectSampleType(text) {
+    const t = text.toLowerCase();
+    const uMatch = t.match(/\bu\s*([0-9]{2,3})\b/);
+    if (uMatch) return "U" + uMatch[1];
+    if (/\bundisturbed\b/.test(t)) return "undisturbed";
+    if (/\bdisturbed\b/.test(t)) return "disturbed";
+    if (/\bbulk\b/.test(t)) return "bulk";
+    if (/\bbag\b/.test(t)) return "bag";
+    if (/\bjar\b/.test(t)) return "jar";
+    if (/\bblock\b/.test(t)) return "block";
+    if (/\bsplit\s*spoon\b/.test(t)) return "split spoon";
+    if (/\bgrab\b/.test(t)) return "grab";
+    return null;
+  }
+
+  function countDepthMarkers(text) {
+    const t = preprocessTranscript(text || "");
+    const m1 = t.match(/\b\d+(?:\.\d+)?\s*(?:m|metres|meters)\b/gi) || [];
+    const m2 = t.match(/\b(?:at|depth|@|around|approx(?:imately)?|about)\s+\d+(?:\.\d+)?\b/gi) || [];
+    return m1.length + m2.length;
+  }
+
+  function splitMultiItems(raw, allowAndSplit = false, includeComma = false) {
+    let t = raw || "";
+    t = t.replace(/\bbetween\s+(\d+(?:\.\d+)?)\s*(?:m|metres|meters)?\s+and\s+(\d+(?:\.\d+)?)\s*(?:m|metres|meters)?\b/gi,
+      (m) => m.replace(/\sand\s/i, " & ")
+    );
+    const parts = [];
+    const tokens = [];
+    if (includeComma) tokens.push(",\\s+");
+    tokens.push("\\.\\s+", ";\\s+", "\\bthen\\b", "\\bfollowed by\\b", "\\bafter that\\b", "\\bplus\\b", "\\balso\\b");
+    if (allowAndSplit) tokens.push("\\band\\b");
+    const re = new RegExp(tokens.join("|"), "i");
+    const split = t.split(re).map(s => (s || "").trim()).filter(Boolean);
+    for (const seg of split) {
+      const restored = seg.replace(/\s*&\s*/g, " and ").trim();
+      if (restored) parts.push(restored);
+    }
+    return parts.length ? parts : [raw];
+  }
+
+  function stripJoiners(text) {
+    return (text || "")
+      .replace(/^(?:and|also|plus|then|followed by|after that|with|including|along with)\b\s*/i, "")
+      .replace(/\s+\b(?:and|also|plus|then|followed by|after that|with|including|along with)\b$/i, "")
+      .trim();
+  }
+
+  function collectPrimaryMatches(text) {
+    const matches = [];
+    const rules = [
+      ["sample", reTypeSample],
+      ["test", reTypeTest],
+      ["water", reTypeWater]
+    ];
+    for (const [type, baseRe] of rules) {
+      const re = new RegExp(baseRe.source, "ig");
+      let m;
+      while ((m = re.exec(text)) !== null) {
+        matches.push({ index: m.index, type, match: m[0] });
+      }
+    }
+    matches.sort((a, b) => a.index - b.index);
+    return matches;
+  }
+
+  function splitByPrimaryKeywords(segment) {
+    const text = segment || "";
+    const matches = collectPrimaryMatches(text);
+    if (!matches.length) return [text];
+    if (matches.length === 1) {
+      const idx = matches[0].index;
+      const head = text.slice(0, idx).trim();
+      const tail = text.slice(idx).trim();
+      if (head && reTypeStrata.test(head)) return [head, tail];
+      return [text];
+    }
+    const parts = [];
+    let includeHead = false;
+    const first = matches[0];
+    const head = text.slice(0, first.index).trim();
+    if (head) {
+      if (reTypeStrata.test(head)) parts.push(head);
+      else includeHead = true;
+    }
+    for (let i = 0; i < matches.length; i++) {
+      const start = matches[i].index;
+      const end = (i + 1 < matches.length) ? matches[i + 1].index : text.length;
+      const sliceStart = (i === 0 && includeHead) ? 0 : start;
+      const part = text.slice(sliceStart, end).trim();
+      if (part) parts.push(part);
+    }
+    return parts.length ? parts : [text];
+  }
+
+  function isMeaningfulSegment(segment) {
+    const s = (segment || "").trim();
+    if (!s) return false;
+    const signals = detectTypeSignals(s);
+    if (signals.totalCount > 0) return true;
+    const words = s.split(/\s+/).filter(Boolean);
+    return words.length >= 2 && s.length >= 6;
+  }
+
+  function parseSample(text) {
+    const raw = text || "";
+    const t = preprocessTranscript(raw);
+    const depthRange = extractDepthsSingle(raw);
+    const marker = extractDepthMarker(raw);
+    const type = detectSampleType(t);
+    const idMatch = t.match(/\b(?:sample|s)\s*#?\s*(\d+)\b/);
+    const sample = {
+      depth: null,
+      from: null,
+      to: null,
+      type,
+      id: idMatch ? ("S" + idMatch[1]) : null,
+      raw
+    };
+    if (depthRange.from !== null || depthRange.to !== null) {
+      sample.from = depthRange.from;
+      sample.to = depthRange.to;
+      sample.depth = (depthRange.from != null && depthRange.to != null)
+        ? (depthRange.from + depthRange.to) / 2
+        : (depthRange.to ?? depthRange.from);
+      sample.depth_basis = depthRange.basis;
+    } else if (marker.depth != null) {
+      sample.depth = marker.depth;
+      sample.depth_basis = marker.basis;
+    }
+    return sample;
+  }
+
+  function parseSamplesFromText(raw) {
+    const baseType = detectSampleType(raw || "");
+    const allowAndSplit = countDepthMarkers(raw) >= 2;
+    const segments = splitMultiItems(raw, allowAndSplit, allowAndSplit);
+    const samples = [];
+    let pending = "";
+    for (const seg of segments) {
+      const segment = pending ? (pending + " " + seg) : seg;
+      const s = parseSample(segment);
+      if (!s.type && baseType) s.type = baseType;
+      if (s.depth == null && s.from == null && s.to == null) {
+        pending = segment;
+        if (segments.length > 1) continue;
+      } else {
+        pending = "";
+      }
+      samples.push(s);
+    }
+    if (!samples.length) {
+      const fallback = parseSample(raw);
+      if (!fallback.type && baseType) fallback.type = baseType;
+      samples.push(fallback);
+    }
+    return samples;
+  }
+
+  function parseTimeMinutes(text) {
+    const t = text.toLowerCase();
+    const m = t.match(/\b(\d+(?:\.\d+)?)\s*(min|mins|minutes|hr|hrs|hours|h)\b/);
+    if (!m) return null;
+    const val = parseFloat(m[1]);
+    const unit = m[2];
+    return unit.startsWith("h") ? Math.round(val * 60) : Math.round(val);
+  }
+
+  function parseWater(text) {
+    const raw = text || "";
+    const t = preprocessTranscript(raw);
+    const depthRange = extractDepthsSingle(raw);
+    const marker = extractDepthMarker(raw);
+    const water = {
+      depth: null,
+      from: null,
+      to: null,
+      condition: null,
+      remark: raw || null,
+      time_minutes: parseTimeMinutes(t),
+      raw
+    };
+    if (/\bno\s+water\b|\bdry\b/.test(t)) water.condition = "dry";
+    if (/\bwater\s+strike\b|\bstrike\b/.test(t)) water.condition = "strike";
+    if (/\bstanding\s+water\b/.test(t)) water.condition = "standing";
+    if (/\bseepage\b|\bseep\b/.test(t)) water.condition = "seepage";
+    if (/\binflow\b/.test(t)) water.condition = "inflow";
+
+    if (depthRange.from !== null || depthRange.to !== null) {
+      water.from = depthRange.from;
+      water.to = depthRange.to;
+      water.depth = depthRange.to ?? depthRange.from;
+    } else if (marker.depth != null) {
+      water.depth = marker.depth;
+    }
+    return water;
+  }
+
+  function parseWatersFromText(raw) {
+    const base = parseWater(raw);
+    const allowAndSplit = countDepthMarkers(raw) >= 2;
+    const segments = splitMultiItems(raw, allowAndSplit, allowAndSplit);
+    const waters = [];
+    let pending = "";
+    for (const seg of segments) {
+      const segment = pending ? (pending + " " + seg) : seg;
+      const w = parseWater(segment);
+      if (!w.condition && base.condition) w.condition = base.condition;
+      if (w.depth == null && w.from == null && w.to == null && w.condition !== "dry") {
+        pending = segment;
+        if (segments.length > 1) continue;
+      } else {
+        pending = "";
+      }
+      waters.push(w);
+    }
+    if (!waters.length) waters.push(base);
+    return waters;
+  }
+
+  function detectTestType(text) {
+    const t = text.toLowerCase();
+    if (/\bspt\b|\bstandard\s+penetration\b/.test(t)) return "SPT";
+    if (/\bvane\b/.test(t)) return "vane shear";
+    if (/\bcpt\b|\bcone\s+penetration\b/.test(t)) return "CPT";
+    if (/\bdcp\b/.test(t)) return "DCP";
+    if (/\bpressuremeter\b/.test(t)) return "pressuremeter";
+    if (/\bplate\s+load\b|\bplate\s+bearing\b/.test(t)) return "plate load";
+    if (/\bpermeability\b/.test(t)) return "permeability";
+    return null;
+  }
+
+  function parseTest(text) {
+    const raw = text || "";
+    const t = preprocessTranscript(raw);
+    const depthRange = extractDepthsSingle(raw);
+    const marker = extractDepthMarker(raw);
+    let type = null;
+    type = detectTestType(t);
+
+    const resultParts = [];
+    const nMatch = t.match(/\bn\s*=?\s*(\d+)\b/);
+    if (nMatch) resultParts.push("N=" + nMatch[1]);
+    const sptMatch = t.match(/\bspt\s*=?\s*(\d+)\b/);
+    if (sptMatch && !nMatch) resultParts.push("N=" + sptMatch[1]);
+    const blowsMatch = t.match(/\b(\d+)\s*blows\b/);
+    if (blowsMatch && !nMatch) resultParts.push(blowsMatch[1] + " blows");
+    const kpaMatch = t.match(/\b(\d+(?:\.\d+)?)\s*(kpa|kn\/m2|kn\s*\/\s*m2)\b/);
+    if (kpaMatch) resultParts.push(kpaMatch[1] + " " + kpaMatch[2].replace(/\s+/g, ""));
+
+    const test = {
+      depth: null,
+      from: null,
+      to: null,
+      type,
+      result: resultParts.length ? resultParts.join(", ") : null,
+      raw
+    };
+    if (depthRange.from !== null || depthRange.to !== null) {
+      test.from = depthRange.from;
+      test.to = depthRange.to;
+      test.depth = depthRange.to ?? depthRange.from;
+    } else if (marker.depth != null) {
+      test.depth = marker.depth;
+    }
+    return test;
+  }
+
+  function parseTestsFromText(raw) {
+    const baseType = detectTestType(raw || "");
+    const allowAndSplit = countDepthMarkers(raw) >= 2;
+    const segments = splitMultiItems(raw, allowAndSplit, allowAndSplit);
+    const tests = [];
+    let pending = "";
+    for (const seg of segments) {
+      const segment = pending ? (pending + " " + seg) : seg;
+      const t = parseTest(segment);
+      if (!t.type && baseType) t.type = baseType;
+      if (t.depth == null && t.from == null && t.to == null) {
+        pending = segment;
+        if (segments.length > 1) continue;
+      } else {
+        pending = "";
+      }
+      tests.push(t);
+    }
+    if (!tests.length) {
+      const fallback = parseTest(raw);
+      if (!fallback.type && baseType) fallback.type = baseType;
+      tests.push(fallback);
+    }
+    return tests;
+  }
+
+  function buildPrompts(parsed) {
+    const prompts = [];
+    if (!parsed) return prompts;
+    const type = parsed.entry_type;
+    if (type === "mixed") {
+      const items = parsed.items || [];
+      if (!items.length) return [{ level: "warn", text: "No items detected in mixed entry." }];
+      for (const [idx, item] of items.entries()) {
+        if (!item || item.entry_type === "mixed") continue;
+        const sub = buildPrompts(item);
+        for (const p of sub) {
+          prompts.push({
+            level: p.level,
+            text: `Item ${idx + 1} (${item.entry_type}): ${p.text}`
+          });
+        }
+      }
+      return prompts;
+    }
+    if (type === "strata") {
+      const layers = (parsed.layers && parsed.layers.length) ? parsed.layers : (parsed.layer ? [parsed.layer] : []);
+      if (!layers.length) {
+        prompts.push({ level: "warn", text: "No strata detected in this entry." });
+      }
+      layers.forEach((layer, idx) => {
+        const bs = layer.bs5930 || {};
+        const hasDepth = layer.from != null || layer.to != null;
+        if (!hasDepth) prompts.push({ level: "warn", text: `Layer ${idx + 1}: depth interval not detected.` });
+        if (!bs.primary) prompts.push({ level: "warn", text: `Layer ${idx + 1}: primary soil not detected for BS 5930 description.` });
+        if (!bs.color) prompts.push({ level: "warn", text: `Layer ${idx + 1}: color not stated (e.g., dark brown, grey).` });
+        if (!bs.moisture && bs.primary !== "ROCK") prompts.push({ level: "warn", text: `Layer ${idx + 1}: moisture not stated (dry / moist / wet).` });
+        const cohesive = bs.primary === "CLAY" || bs.primary === "SILT";
+        const granular = bs.primary === "SAND" || bs.primary === "GRAVEL" || bs.primary === "COBBLES" || bs.primary === "BOULDERS";
+        if (cohesive && !bs.consistency) prompts.push({ level: "warn", text: `Layer ${idx + 1}: consistency not stated (soft/firm/stiff etc.).` });
+        if (granular && !bs.density) prompts.push({ level: "warn", text: `Layer ${idx + 1}: density not stated (loose/medium dense/dense).` });
+      });
+    } else if (type === "sample") {
+      const items = parsed.samples && parsed.samples.length ? parsed.samples : (parsed.sample ? [parsed.sample] : []);
+      if (!items.length) prompts.push({ level: "warn", text: "No samples detected." });
+      items.forEach((s, idx) => {
+        if (!s.depth && s.from == null && s.to == null) prompts.push({ level: "warn", text: `Sample ${idx + 1}: depth not detected.` });
+        if (!s.type) prompts.push({ level: "warn", text: `Sample ${idx + 1}: type not stated (U100, disturbed, bulk).` });
+      });
+    } else if (type === "water") {
+      const items = parsed.waters && parsed.waters.length ? parsed.waters : (parsed.water ? [parsed.water] : []);
+      if (!items.length) prompts.push({ level: "warn", text: "No water observations detected." });
+      items.forEach((w, idx) => {
+        if (!w.depth && w.from == null && w.to == null && w.condition !== "dry") {
+          prompts.push({ level: "warn", text: `Water ${idx + 1}: depth not detected.` });
+        }
+      });
+    } else if (type === "test") {
+      const items = parsed.tests && parsed.tests.length ? parsed.tests : (parsed.test ? [parsed.test] : []);
+      if (!items.length) prompts.push({ level: "warn", text: "No tests detected." });
+      items.forEach((t, idx) => {
+        if (!t.depth && t.from == null && t.to == null) prompts.push({ level: "warn", text: `Test ${idx + 1}: depth not detected.` });
+        if (!t.type) prompts.push({ level: "warn", text: `Test ${idx + 1}: type not detected (SPT, vane, CPT).` });
+        if (!t.result) prompts.push({ level: "warn", text: `Test ${idx + 1}: result not detected (e.g., N=15).` });
+      });
+    }
+    return prompts;
+  }
+
+  function renderPillsFromParsed(parsed) {
+    const el = $("pills");
+    el.innerHTML = "";
+    const add = (txt, cls="") => {
+      const s = document.createElement("span");
+      s.className = ("pill " + cls).trim();
+      s.textContent = txt;
+      el.appendChild(s);
+    };
+    if (!parsed) return;
+    const type = parsed.entry_type || "note";
+    add("Type: " + type, "ok");
+    if (type === "mixed") {
+      const items = parsed.items || [];
+      add("Items: " + items.length, items.length ? "ok" : "warn");
+      const types = [...new Set(items.map(i => i.entry_type).filter(Boolean))];
+      add("Types: " + (types.join(", ") || "(missing)"), types.length ? "ok" : "warn");
+      const depths = [];
+      for (const item of items) {
+        if (!item) continue;
+        if (item.entry_type === "strata") {
+          const layers = item.layers || (item.layer ? [item.layer] : []);
+          for (const l of layers) {
+            if (isFiniteNumber(l.from)) depths.push(l.from);
+            if (isFiniteNumber(l.to)) depths.push(l.to);
+          }
+        } else if (item.entry_type === "sample") {
+          const list = item.samples || (item.sample ? [item.sample] : []);
+          for (const s of list) {
+            if (isFiniteNumber(s.depth)) depths.push(s.depth);
+            if (isFiniteNumber(s.from)) depths.push(s.from);
+            if (isFiniteNumber(s.to)) depths.push(s.to);
+          }
+        } else if (item.entry_type === "water") {
+          const list = item.waters || (item.water ? [item.water] : []);
+          for (const w of list) {
+            if (isFiniteNumber(w.depth)) depths.push(w.depth);
+            if (isFiniteNumber(w.from)) depths.push(w.from);
+            if (isFiniteNumber(w.to)) depths.push(w.to);
+          }
+        } else if (item.entry_type === "test") {
+          const list = item.tests || (item.test ? [item.test] : []);
+          for (const t of list) {
+            if (isFiniteNumber(t.depth)) depths.push(t.depth);
+            if (isFiniteNumber(t.from)) depths.push(t.from);
+            if (isFiniteNumber(t.to)) depths.push(t.to);
+          }
+        }
+      }
+      if (depths.length) {
+        add("Depth span: " + formatDepthRange(Math.min(...depths), Math.max(...depths)), "ok");
+      }
+    } else if (type === "strata") {
+      if (parsed.layers && parsed.layers.length) {
+        const span = parsed.depth || { from: null, to: null, basis: "none" };
+        const primaries = [...new Set(parsed.layers.map(l => l.bs5930?.primary || l.material).filter(Boolean))];
+        add("Layers: " + parsed.layers.length, "ok");
+        add("Depth span: " + formatDepthRange(span.from, span.to), (span.from == null || span.to == null) ? "warn" : "ok");
+        add("Primary: " + (primaries.join(", ") || "(missing)"), primaries.length ? "ok" : "warn");
+      } else {
+        const d = parsed.depth || { from: null, to: null, basis: "none" };
+        const bs = parsed.bs5930 || {};
+        add("Depth: " + formatDepthRange(d.from, d.to), d.basis === "none" ? "warn" : "ok");
+        add("Primary: " + (bs.primary || "(missing)"), bs.primary ? "ok" : "warn");
+        add("Moisture: " + (bs.moisture || "(missing)"), bs.moisture ? "ok" : "warn");
+        const cons = bs.consistency || bs.density;
+        add("Consistency/Density: " + (cons || "(missing)"), cons ? "ok" : "warn");
+        add("Color: " + (bs.color || "(missing)"), bs.color ? "ok" : "warn");
+      }
+    } else if (type === "sample") {
+      const items = parsed.samples && parsed.samples.length ? parsed.samples : (parsed.sample ? [parsed.sample] : []);
+      add("Samples: " + items.length, items.length ? "ok" : "warn");
+      const depths = items.map(s => s.depth ?? s.from ?? s.to).filter(isFiniteNumber);
+      if (depths.length) {
+        add("Depth span: " + formatDepthRange(Math.min(...depths), Math.max(...depths)), "ok");
+      }
+      const types = [...new Set(items.map(s => s.type).filter(Boolean))];
+      add("Types: " + (types.join(", ") || "(missing)"), types.length ? "ok" : "warn");
+    } else if (type === "water") {
+      const items = parsed.waters && parsed.waters.length ? parsed.waters : (parsed.water ? [parsed.water] : []);
+      add("Water obs: " + items.length, items.length ? "ok" : "warn");
+      const depths = items.map(w => w.depth ?? w.from ?? w.to).filter(isFiniteNumber);
+      if (depths.length) {
+        add("Depth span: " + formatDepthRange(Math.min(...depths), Math.max(...depths)), "ok");
+      }
+      const conds = [...new Set(items.map(w => w.condition).filter(Boolean))];
+      add("Conditions: " + (conds.join(", ") || "noted"), "ok");
+    } else if (type === "test") {
+      const items = parsed.tests && parsed.tests.length ? parsed.tests : (parsed.test ? [parsed.test] : []);
+      add("Tests: " + items.length, items.length ? "ok" : "warn");
+      const depths = items.map(t => t.depth ?? t.from ?? t.to).filter(isFiniteNumber);
+      if (depths.length) {
+        add("Depth span: " + formatDepthRange(Math.min(...depths), Math.max(...depths)), "ok");
+      }
+      const types = [...new Set(items.map(t => t.type).filter(Boolean))];
+      add("Types: " + (types.join(", ") || "(missing)"), types.length ? "ok" : "warn");
+    } else if (type === "note") {
+      add("Note: " + (parsed.note?.text || parsed.raw || ""), "ok");
+    }
+  }
+
+  function renderPrompts(prompts) {
+    const el = $("prompts");
+    el.innerHTML = "";
+    if (!prompts.length) {
+      const d = document.createElement("div");
+      d.className = "muted";
+      d.textContent = "No prompts.";
+      el.appendChild(d);
+      return;
+    }
+    for (const p of prompts) {
+      const div = document.createElement("div");
+      div.className = "card " + (p.level === "warn" ? "warn" : "ok");
+      div.style.padding = "10px";
+      div.innerHTML = "<div><strong>" + p.level.toUpperCase() + "</strong>: " + p.text + "</div>";
+      el.appendChild(div);
+    }
+  }
+
+  function buildReviewHtml(parsed) {
+    if (!parsed) return "";
+    const type = parsed.entry_type || "note";
+    const pieces = [];
+    if (type === "strata") {
+      const layers = (parsed.layers && parsed.layers.length) ? parsed.layers : (parsed.layer ? [parsed.layer] : []);
+      if (!layers.length) return "<div class=\"review-muted\">No strata detected.</div>";
+      pieces.push("<table class=\"review-table\"><thead><tr>" +
+        "<th>Layer</th><th>From</th><th>To</th><th>Primary</th><th>Secondary</th><th>Color</th>" +
+        "<th>Moisture</th><th>Cons/Density</th><th>Description</th></tr></thead><tbody>");
+      layers.forEach((layer, idx) => {
+        const bs = layer.bs5930 || {};
+        const cons = bs.consistency || bs.density || "";
+        const secondary = (bs.secondary || []).join(" ");
+        const inferred = layer.inferred_from_context ? " <span class=\"review-badge\">inferred</span>" : "";
+        pieces.push("<tr>" +
+          "<td>" + (idx + 1) + inferred + "</td>" +
+          "<td>" + formatDepthValue(layer.from) + "</td>" +
+          "<td>" + formatDepthValue(layer.to) + "</td>" +
+          "<td>" + (bs.primary || layer.material || "") + "</td>" +
+          "<td>" + secondary + "</td>" +
+          "<td>" + (bs.color || "") + "</td>" +
+          "<td>" + (bs.moisture || "") + "</td>" +
+          "<td>" + cons + "</td>" +
+          "<td>" + (bs.description || "") + "</td>" +
+          "</tr>");
+      });
+      pieces.push("</tbody></table>");
+    } else if (type === "sample") {
+      const items = parsed.samples && parsed.samples.length ? parsed.samples : (parsed.sample ? [parsed.sample] : []);
+      pieces.push("<table class=\"review-table\"><thead><tr><th>#</th><th>Depth</th><th>Type</th><th>ID</th><th>Raw</th></tr></thead><tbody>");
+      items.forEach((s, idx) => {
+        const depthLabel = s.depth != null ? formatDepthSingle(s.depth) : formatDepthRange(s.from, s.to);
+        pieces.push("<tr><td>" + (idx + 1) + "</td><td>" + depthLabel + "</td><td>" + (s.type || "") + "</td><td>" + (s.id || "") + "</td><td>" + (s.raw || "") + "</td></tr>");
+      });
+      pieces.push("</tbody></table>");
+    } else if (type === "water") {
+      const items = parsed.waters && parsed.waters.length ? parsed.waters : (parsed.water ? [parsed.water] : []);
+      pieces.push("<table class=\"review-table\"><thead><tr><th>#</th><th>Depth</th><th>Condition</th><th>Time</th><th>Remark</th></tr></thead><tbody>");
+      items.forEach((w, idx) => {
+        const depthLabel = w.depth != null ? formatDepthSingle(w.depth) : formatDepthRange(w.from, w.to);
+        const timeLabel = w.time_minutes != null ? (w.time_minutes + " min") : "";
+        pieces.push("<tr><td>" + (idx + 1) + "</td><td>" + depthLabel + "</td><td>" + (w.condition || "") + "</td><td>" + timeLabel + "</td><td>" + (w.remark || w.raw || "") + "</td></tr>");
+      });
+      pieces.push("</tbody></table>");
+    } else if (type === "test") {
+      const items = parsed.tests && parsed.tests.length ? parsed.tests : (parsed.test ? [parsed.test] : []);
+      pieces.push("<table class=\"review-table\"><thead><tr><th>#</th><th>Depth</th><th>Type</th><th>Result</th><th>Raw</th></tr></thead><tbody>");
+      items.forEach((t, idx) => {
+        const depthLabel = t.depth != null ? formatDepthSingle(t.depth) : formatDepthRange(t.from, t.to);
+        pieces.push("<tr><td>" + (idx + 1) + "</td><td>" + depthLabel + "</td><td>" + (t.type || "") + "</td><td>" + (t.result || "") + "</td><td>" + (t.raw || "") + "</td></tr>");
+      });
+      pieces.push("</tbody></table>");
+    } else {
+      const text = parsed.note?.text || parsed.raw || "";
+      pieces.push("<div class=\"review-muted\">" + (text || "No details.") + "</div>");
+    }
+    return pieces.join("");
+  }
+
+  function renderReview(parsed) {
+    const el = $("review");
+    if (!el) return;
+    if (!parsed) {
+      el.textContent = "Nothing to review yet.";
+      el.className = "review-muted";
+      return;
+    }
+    if (parsed.entry_type === "mixed" && parsed.items && parsed.items.length) {
+      const blocks = parsed.items.map((item, idx) => {
+        const header = "<div class=\"review-badge\">Item " + (idx + 1) + ": " + (item.entry_type || "note") + "</div>";
+        return "<div class=\"card\" style=\"padding:8px; margin-bottom:8px;\">" + header + buildReviewHtml(item) + "</div>";
+      });
+      el.className = "";
+      el.innerHTML = blocks.join("");
+      return;
+    }
+    el.className = "";
+    el.innerHTML = buildReviewHtml(parsed);
+  }
+
+  function parseEntryRaw(raw, entryTypeOverride, options = {}) {
+    const entryType = detectEntryType(raw, entryTypeOverride, options);
+    const timestamp = new Date().toISOString();
+    let parsed = { timestamp, raw, entry_type: entryType };
+    const allowMixed = options.allowMixed !== false;
+    if (allowMixed && (!entryTypeOverride || entryTypeOverride === "auto") && entryType !== "mixed") {
+      const signals = detectTypeSignals(raw);
+      if (signals.totalCount > 1) {
+        const items = parseMixedFromText(raw);
+        const types = new Set(items.map(item => item.entry_type).filter(Boolean));
+        if (types.size > 1) {
+          parsed = { timestamp, raw, entry_type: "mixed", items };
+          return parsed;
+        }
+      }
+    }
+    if (entryType === "mixed") {
+      const items = parseMixedFromText(raw);
+      if (items.length <= 1) return items[0] || parsed;
+      parsed = { ...parsed, items };
+      return parsed;
+    }
+    if (entryType === "strata") {
+      const layers = parseStrataLayersFromText(raw);
+      const froms = layers.map(l => l.from).filter(isFiniteNumber);
+      const tos = layers.map(l => l.to).filter(isFiniteNumber);
+      const depth = {
+        from: froms.length ? Math.min(...froms) : null,
+        to: tos.length ? Math.max(...tos) : null,
+        basis: "rules layers"
+      };
+      parsed = {
+        ...parsed,
+        depth,
+        layers,
+        layer: layers.length ? layers[0] : null,
+        bs5930: layers.length === 1 ? layers[0].bs5930 : null
+      };
+    } else if (entryType === "sample") {
+      const samples = parseSamplesFromText(raw);
+      parsed = { ...parsed, samples, sample: samples[0] || null };
+    } else if (entryType === "water") {
+      const waters = parseWatersFromText(raw);
+      parsed = { ...parsed, waters, water: waters[0] || null };
+    } else if (entryType === "test") {
+      const tests = parseTestsFromText(raw);
+      parsed = { ...parsed, tests, test: tests[0] || null };
+    } else {
+      parsed = { ...parsed, note: { text: raw } };
+    }
+    return parsed;
+  }
+
+  function parseMixedFromText(raw) {
+    const signals = detectTypeSignals(raw);
+    const hasMultipleDepths = countDepthMarkers(raw) >= 2;
+    const allowAndSplit = hasMultipleDepths || signals.primaryCount > 1 || (signals.strata && signals.primaryCount === 1);
+    const includeComma = hasMultipleDepths || signals.primaryCount > 1;
+    const baseSegments = splitMultiItems(raw, allowAndSplit, includeComma);
+    const expanded = [];
+    for (const seg of baseSegments) {
+      const subSegments = splitByPrimaryKeywords(seg);
+      for (const sub of subSegments) {
+        const cleaned = stripJoiners(sub);
+        if (isMeaningfulSegment(cleaned)) expanded.push(cleaned);
+      }
+    }
+    const segments = expanded.length ? expanded : baseSegments;
+    const items = [];
+    for (const seg of segments) {
+      const item = parseEntryRaw(seg, "auto", { allowMixed: false });
+      if (item) items.push(item);
+    }
+    if (!items.length) items.push(parseEntryRaw(raw, "auto", { allowMixed: false }));
+    return items;
+  }
+
+  function analyzeRules() {
+    debug("Analyze (rules) clicked at " + new Date().toISOString());
+    const raw = normalizeText($("txtTranscript").value);
+    const parsed = parseEntryRaw(raw, $("entryType").value, { allowMixed: true });
+    const prompts = buildPrompts(parsed);
+    state.current = { mode: "rules", timestamp: parsed.timestamp, raw, entry_type: parsed.entry_type, parsed, prompts, confirmed: false };
+    $("out").textContent = JSON.stringify(state.current, null, 2);
+    renderPillsFromParsed(parsed);
+    renderPrompts(prompts);
+    renderReview(parsed);
+    $("btnConfirm").disabled = raw.length === 0;
+    debug("Analyze (rules) completed.");
+  }
+
+  async function analyzeBest() {
+    debug("Analyze (best guess) clicked at " + new Date().toISOString());
+    const raw = normalizeText($("txtTranscript").value);
+    if (!raw) {
+      setDiag("Type or dictate something first.");
+      return;
+    }
+    analyzeRules();
+    aiState.lastLocal = state.current;
+    if (remoteState.enabled && remoteState.apiKey) {
+      aiState.requestId += 1;
+      beginAiRun();
+      aiInterpretLayersOnline({ raw, requestId: aiState.requestId });
+      return;
+    }
+    if (!engine) {
+      setAiStatus("AI: not loaded");
+      setAiProgressRunning(false);
+      setAiButtons(false);
+      return;
+    }
+    aiState.requestId += 1;
+    beginAiRun();
+    aiInterpretLayers({ raw, requestId: aiState.requestId });
+  }
+
+  // ---------------- LLM integration (WebLLM) ----------------
+  let engine = null;
+
+  function setLLMStatus(msg) { $("llmStatus").textContent = "Local LLM: " + msg; }
+  function setLLMProgress(msg) { $("llmProgress").textContent = msg || ""; }
+  const normalizeApiBase = (url) => (url || "").trim().replace(/\/+$/, "");
+  const setRemoteButtons = (enabled) => {
+    const btnEnable = $("btnEnableRemote");
+    const btnDisable = $("btnDisableRemote");
+    if (btnEnable) btnEnable.disabled = enabled;
+    if (btnDisable) btnDisable.disabled = !enabled;
+  };
+  const enableRemote = () => {
+    const key = ($("remoteApiKey")?.value || "").trim();
+    const model = ($("remoteModel")?.value || remoteState.model).trim();
+    const baseUrl = normalizeApiBase($("remoteBase")?.value || remoteState.baseUrl);
+    if (!key) {
+      setDiag("Online LLM needs an API key.");
+      setRemoteStatus("disabled (missing key)");
+      return;
+    }
+    remoteState.apiKey = key;
+    remoteState.model = model || remoteState.model;
+    remoteState.baseUrl = baseUrl || remoteState.baseUrl;
+    remoteState.enabled = true;
+    setRemoteButtons(true);
+    setRemoteStatus("enabled (" + remoteState.model + ")");
+    setDiag("");
+  };
+  const disableRemote = () => {
+    remoteState.enabled = false;
+    remoteState.apiKey = "";
+    const keyInput = $("remoteApiKey");
+    if (keyInput) keyInput.value = "";
+    setRemoteButtons(false);
+    setRemoteStatus("disabled");
+  };
+
+  async function loadLLM() {
+    const modelId = $("modelSel").value;
+    setLLMStatus("loading " + modelId + "…");
+    setLLMProgress("If this hangs, your device may not support WebGPU or is low on memory.");
+    debug("Loading LLM model: " + modelId);
+
+    try {
+      engine = await CreateMLCEngine(modelId, {
+        initProgressCallback: (p) => {
+          // p: {progress, timeElapsed, text}
+          const pct = Math.round((p.progress ?? 0) * 100);
+          setLLMProgress((p.text ? p.text + " " : "") + (isFinite(pct) ? (pct + "%") : ""));
+        }
+      });
+      setLLMStatus("loaded (" + modelId + ")");
+      setLLMProgress("");
+      setAiStatus("AI: idle");
+      debug("LLM loaded.");
+    } catch (e) {
+      engine = null;
+      setLLMStatus("failed to load");
+      setLLMProgress("Error: " + (e?.message || e));
+      setAiStatus("AI: unavailable");
+      debug("LLM load failed: " + (e?.message || e));
+    }
+  }
+
+  function extractJSON(text) {
+    // Try to find JSON object in the response (with or without code fences).
+    const s = text || "";
+    const fenced = s.match(/```json\s*([\s\S]*?)```/i) || s.match(/```\s*([\s\S]*?)```/);
+    const candidate = fenced ? fenced[1] : s;
+    // Find first { ... } block
+    const start = candidate.indexOf("{");
+    const end = candidate.lastIndexOf("}");
+    if (start >= 0 && end > start) return candidate.slice(start, end + 1);
+    return null;
+  }
+
+  function mapAiLayers(layers) {
+    let lastTo = getLastStratumTo(state.log);
+    const mapped = [];
+    for (const layer of layers) {
+      const rawText = normalizeText([layer.material, ...(layer.descriptors || [])].filter(Boolean).join(" "));
+      const materials = guessMaterial(rawText);
+      const qualifiers = detectQualifiers(rawText);
+      const density = detectDensity(rawText);
+      const color = extractColor(rawText);
+      const structure = extractStructure(rawText);
+      const plasticity = detectPlasticity(rawText);
+      const bs5930 = buildBS5930({ raw: rawText, materials, qualifiers, density, color, structure, plasticity });
+      let from = layer.from ?? null;
+      let to = layer.to ?? null;
+      let inferred = false;
+      if (from == null && to != null && lastTo != null) {
+        from = lastTo;
+        inferred = true;
+      }
+      if (from != null && to != null && to < from) {
+        const tmp = from;
+        from = to;
+        to = tmp;
+        inferred = true;
+      }
+      if (to != null) lastTo = to;
+      mapped.push({
+        ...layer,
+        from,
+        to,
+        material: layer.material || bs5930.primary || "UNKNOWN",
+        descriptors: layer.descriptors || [],
+        bs5930,
+        raw: rawText,
+        inferred_from_context: layer.inferred_from_context || inferred
+      });
+    }
+    return mapped;
+  }
+
+  function buildAiPrompt(raw) {
+    const system = `You are a geotechnical logging assistant. Convert natural language into structured depth intervals.
+Return ONLY valid JSON. Do not include markdown, explanations, or extra keys.
+Rules:
+- Ground level/GL/surface means 0.0 m
+- 'Underlain by' means the next layer starts at the previous layer's base depth
+- If a layer only states an end depth (e.g., 'to 0.8 m'), infer start depth from context when possible
+- Convert spoken decimals like 'point eight' to 0.8
+- If a depth or boundary is ambiguous, set confidence < 0.7 and include inferred_from_context true where applicable
+- Prefer BS 5930 style terms in material/descriptors when explicit in the text
+- Never invent new depths not implied by the text`;
+
+    const user = `Input description:\n${raw}\n\nOutput schema:\n{
+  "layers": [
+    {
+      "from": number|null,
+      "to": number|null,
+      "material": string,
+      "descriptors": string[],
+      "confidence": number,
+      "inferred_from_context": boolean
+    }
+  ]
+}`;
+    return { system, user };
+  }
+
+  async function aiInterpretLayersOnline(options = {}) {
+    const raw = normalizeText(options.raw || $("txtTranscript").value);
+    const requestId = options.requestId ?? null;
+    if (!raw) {
+      setDiag("Type or dictate something first.");
+      return;
+    }
+    if (!remoteState.enabled || !remoteState.apiKey) {
+      setRemoteStatus("disabled");
+      setDiag("Online LLM is not enabled.");
+      endAiRun("AI: idle");
+      return;
+    }
+    setRemoteStatus("thinking");
+    debug("AI interpret (online) started at " + new Date().toISOString());
+    const { system, user } = buildAiPrompt(raw);
+    const base = normalizeApiBase(remoteState.baseUrl);
+    const url = base.endsWith("/chat/completions") ? base : (base + "/chat/completions");
+    const controller = new AbortController();
+    aiState.abortController = controller;
+
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer " + remoteState.apiKey
+        },
+        body: JSON.stringify({
+          model: remoteState.model,
+          messages: [
+            { role: "system", content: system },
+            { role: "user", content: user }
+          ],
+          temperature: 0,
+          max_tokens: 512
+        }),
+        signal: controller.signal
+      });
+
+      const rawText = await res.text();
+      let data = null;
+      try {
+        data = JSON.parse(rawText);
+      } catch {
+        data = null;
+      }
+      if (!res.ok) {
+        const msg = data?.error?.message || rawText || res.statusText;
+        throw new Error("Online LLM error (" + res.status + "): " + msg);
+      }
+
+      const text = data?.choices?.[0]?.message?.content || "";
+      debug("Online AI raw response: " + text.slice(0, 500) + (text.length > 500 ? "." : ""));
+      const jsonStr = extractJSON(text);
+      if (!jsonStr) throw new Error("Could not find JSON in model response.");
+      const obj = JSON.parse(jsonStr);
+      if (!obj.layers || !Array.isArray(obj.layers)) throw new Error("JSON missing 'layers' array.");
+
+      if (requestId !== null && requestId !== aiState.requestId) {
+        debug("Online AI result ignored (superseded).");
+        return;
+      }
+      if (aiState.canceled) {
+        debug("Online AI result ignored (canceled).");
+        endAiRun("AI: canceled");
+        return;
+      }
+
+      const mappedLayers = mapAiLayers(obj.layers);
+      const froms = mappedLayers.map(l => l.from).filter(isFiniteNumber);
+      const tos = mappedLayers.map(l => l.to).filter(isFiniteNumber);
+      const minFrom = froms.length ? Math.min(...froms) : null;
+      const maxTo = tos.length ? Math.max(...tos) : null;
+      const parsed = {
+        entry_type: "strata",
+        layers: mappedLayers,
+        depth: { from: minFrom, to: maxTo, basis: "online ai layers" }
+      };
+
+      state.current = {
+        mode: "ai-online",
+        timestamp: new Date().toISOString(),
+        raw,
+        entry_type: "strata",
+        parsed,
+        ai_layers: obj.layers
+      };
+
+      $("out").textContent = JSON.stringify(state.current, null, 2);
+      renderPillsFromParsed(parsed);
+      renderReview(parsed);
+
+      const prompts = [];
+      for (const [i, l] of mappedLayers.entries()) {
+        if ((typeof l.confidence === "number" && l.confidence < 0.7) || l.inferred_from_context) {
+          prompts.push({
+            level: "warn",
+            text: `Layer ${i+1} needs confirmation (confidence ${l.confidence ?? "?"}).`
+          });
+        }
+      }
+      renderPrompts(prompts);
+
+      $("btnConfirm").disabled = false;
+      setRemoteStatus("ready (" + remoteState.model + ")");
+      endAiRun("AI: ready");
+      debug("Online AI interpret completed.");
+    } catch (e) {
+      const msg = e?.name === "AbortError" ? "canceled" : (e?.message || e);
+      const hint = /failed to fetch|networkerror|cors/i.test(String(msg))
+        ? " (check CORS or use a proxy server)."
+        : "";
+      setRemoteStatus("error");
+      setDiag("Online AI failed: " + msg + hint);
+      endAiRun(e?.name === "AbortError" ? "AI: canceled" : "AI: error");
+      debug("Online AI interpret failed: " + msg);
+    }
+  }
+
+  async function aiInterpretLayers(options = {}) {
+    if (!engine) {
+      setLLMStatus("not loaded");
+      setAiStatus("AI: not loaded");
+      return;
+    }
+    const raw = normalizeText(options.raw || $("txtTranscript").value);
+    const requestId = options.requestId ?? null;
+    if (!raw) {
+      setDiag("Type or dictate something first.");
+      return;
+    }
+
+    setLLMStatus("thinking.");
+    debug("AI interpret clicked at " + new Date().toISOString());
+    const { system, user } = buildAiPrompt(raw);
+
+    try {
+      const res = await engine.chat.completions.create({
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user }
+        ],
+        temperature: 0,
+        max_tokens: 512
+      });
+
+      const text = res?.choices?.[0]?.message?.content || "";
+      debug("AI raw response: " + text.slice(0, 500) + (text.length > 500 ? "." : ""));
+
+      const jsonStr = extractJSON(text);
+      if (!jsonStr) throw new Error("Could not find JSON in model response.");
+
+      const obj = JSON.parse(jsonStr);
+      if (!obj.layers || !Array.isArray(obj.layers)) throw new Error("JSON missing 'layers' array.");
+
+      if (requestId !== null && requestId !== aiState.requestId) {
+        debug("AI result ignored (superseded).");
+        return;
+      }
+      if (aiState.canceled) {
+        debug("AI result ignored (canceled).");
+        endAiRun("AI: canceled");
+        return;
+      }
+
+      const mappedLayers = mapAiLayers(obj.layers);
+      const froms = mappedLayers.map(l => l.from).filter(isFiniteNumber);
+      const tos = mappedLayers.map(l => l.to).filter(isFiniteNumber);
+      const minFrom = froms.length ? Math.min(...froms) : null;
+      const maxTo = tos.length ? Math.max(...tos) : null;
+      const parsed = {
+        entry_type: "strata",
+        layers: mappedLayers,
+        depth: { from: minFrom, to: maxTo, basis: "ai layers" }
+      };
+
+      // Store in state and show in output panel
+      state.current = {
+        mode: "ai",
+        timestamp: new Date().toISOString(),
+        raw,
+        entry_type: "strata",
+        parsed,
+        ai_layers: obj.layers
+      };
+
+      $("out").textContent = JSON.stringify(state.current, null, 2);
+      renderPillsFromParsed(parsed);
+      renderReview(parsed);
+
+      // Prompts: list any low-confidence layers
+      const prompts = [];
+      for (const [i, l] of mappedLayers.entries()) {
+        if ((typeof l.confidence === "number" && l.confidence < 0.7) || l.inferred_from_context) {
+          prompts.push({
+            level: "warn",
+            text: `Layer ${i+1} needs confirmation (confidence ${l.confidence ?? "?"}).`
+          });
+        }
+      }
+      renderPrompts(prompts);
+
+      $("btnConfirm").disabled = false;
+      setLLMStatus("ready");
+      endAiRun("AI: ready");
+      debug("AI interpret completed.");
+    } catch (e) {
+      setLLMStatus("error");
+      setDiag("AI interpret failed: " + (e?.message || e));
+      endAiRun("AI: error");
+      debug("AI interpret failed: " + (e?.message || e));
+    }
+  }
+
+  // ---------------- Borehole log ----------------
+  const svgNS = "http://www.w3.org/2000/svg";
+
+  function svgEl(name, attrs = {}) {
+    const el = document.createElementNS(svgNS, name);
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, String(v));
+    return el;
+  }
+
+  function addText(svg, x, y, text, attrs = {}) {
+    const el = svgEl("text", { x, y, ...attrs });
+    el.textContent = text;
+    svg.appendChild(el);
+    return el;
+  }
+
+  function addLine(svg, x1, y1, x2, y2, stroke, width = 1, dash = null) {
+    const attrs = { x1, y1, x2, y2, stroke, "stroke-width": width };
+    if (dash) attrs["stroke-dasharray"] = dash;
+    const el = svgEl("line", attrs);
+    svg.appendChild(el);
+    return el;
+  }
+
+  function addRect(svg, x, y, w, h, fill, stroke) {
+    const el = svgEl("rect", { x, y, width: w, height: h, fill, stroke });
+    svg.appendChild(el);
+    return el;
+  }
+
+  function addPolygon(svg, points, fill, stroke) {
+    const el = svgEl("polygon", { points, fill, stroke });
+    svg.appendChild(el);
+    return el;
+  }
+
+  function pickMaterialColor(primary) {
+    const key = (primary || "").toUpperCase();
+    if (/\bSTONE\b|\bSHALE\b|\bMUDSTONE\b|\bSILTSTONE\b|\bBASALT\b|\bGRANITE\b/.test(key)) return "#b3b3b3";
+    const map = {
+      "TOPSOIL": "#6e4b2a",
+      "MADE GROUND": "#9c8f7a",
+      "CLAY": "#b06d3b",
+      "SILT": "#c2b280",
+      "SAND": "#e2c38b",
+      "GRAVEL": "#b0a99f",
+      "COBBLES": "#9aa0a6",
+      "BOULDERS": "#8d9095",
+      "PEAT": "#3b2f2f",
+      "CHALK": "#f2f2f2",
+      "ROCK": "#a3a3a3"
+    };
+    return map[key] || "#dddddd";
+  }
+
+  function chooseTick(maxDepth) {
+    if (maxDepth <= 1) return 0.1;
+    if (maxDepth <= 3) return 0.2;
+    if (maxDepth <= 6) return 0.5;
+    if (maxDepth <= 12) return 1;
+    if (maxDepth <= 30) return 2;
+    return 5;
+  }
+
+  function calcPxPerM(maxDepth) {
+    if (maxDepth <= 2) return 160;
+    if (maxDepth <= 5) return 120;
+    if (maxDepth <= 10) return 90;
+    if (maxDepth <= 20) return 70;
+    return 50;
+  }
+
+  function getLogMaxDepth() {
+    const depths = [];
+    for (const l of state.log.strata) {
+      if (isFiniteNumber(l.from)) depths.push(l.from);
+      if (isFiniteNumber(l.to)) depths.push(l.to);
+    }
+    for (const s of state.log.samples) {
+      if (isFiniteNumber(s.depth)) depths.push(s.depth);
+      if (isFiniteNumber(s.from)) depths.push(s.from);
+      if (isFiniteNumber(s.to)) depths.push(s.to);
+    }
+    for (const w of state.log.water) {
+      if (isFiniteNumber(w.depth)) depths.push(w.depth);
+      if (isFiniteNumber(w.from)) depths.push(w.from);
+      if (isFiniteNumber(w.to)) depths.push(w.to);
+    }
+    for (const t of state.log.tests) {
+      if (isFiniteNumber(t.depth)) depths.push(t.depth);
+      if (isFiniteNumber(t.from)) depths.push(t.from);
+      if (isFiniteNumber(t.to)) depths.push(t.to);
+    }
+    const max = depths.length ? Math.max(...depths) : 1;
+    return Math.max(1, Math.ceil((max + 0.1) * 10) / 10);
+  }
+
+  function renderLogData() {
+    $("logData").textContent = JSON.stringify(state.log, null, 2);
+  }
+
+  function renderLog() {
+    const svg = $("logSvg");
+    if (!svg) return;
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+
+    const maxDepth = getLogMaxDepth();
+    const svgWidth = svg.clientWidth || 720;
+    const svgHeight = svg.clientHeight || 800;
+    const colX = 90;
+    const colW = Math.max(140, Math.min(260, Math.round(svgWidth * 0.3)));
+    const top = 24;
+    const usableHeight = Math.max(120, svgHeight - top - 40);
+    const pxPerM = maxDepth > 0 ? (usableHeight / maxDepth) : calcPxPerM(maxDepth);
+    const colH = Math.max(120, Math.round(maxDepth * pxPerM));
+    const bottom = top + colH;
+    const width = svgWidth;
+    const height = Math.max(svgHeight, bottom + 40);
+
+    svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    svg.removeAttribute("height");
+    svg.removeAttribute("width");
+
+    addText(svg, 10, 14, "Hole: " + (state.log.hole_id || "EH"), { "font-size": "12", "font-weight": "bold", fill: "#222" });
+    addText(svg, colX - 48, 14, "Depth (m)", { "font-size": "10", fill: "#555" });
+
+    // Column outline
+    addRect(svg, colX, top, colW, colH, "#ffffff", "#333");
+
+    // Depth ticks
+    const tick = chooseTick(maxDepth);
+    for (let d = 0; d <= maxDepth + 1e-6; d += tick) {
+      const y = top + (d * pxPerM);
+      addLine(svg, colX - 6, y, colX, y, "#555", 1);
+      addText(svg, colX - 10, y + 4, formatDepthValue(d), { "font-size": "10", "text-anchor": "end", fill: "#333" });
+      addLine(svg, colX, y, colX + colW, y, "#eee", 1);
+    }
+
+    const hasData = state.log.strata.length || state.log.samples.length || state.log.water.length || state.log.tests.length;
+    if (!hasData) {
+      addText(svg, colX + 10, top + 20, "No log data yet.", { "font-size": "12", fill: "#666" });
+      return;
+    }
+
+    // Strata
+    const strata = [...state.log.strata].sort((a, b) => (a.from ?? a.to ?? 0) - (b.from ?? b.to ?? 0));
+    for (const layer of strata) {
+      let from = isFiniteNumber(layer.from) ? layer.from : null;
+      let to = isFiniteNumber(layer.to) ? layer.to : null;
+      if (from == null && to != null) from = Math.max(0, to - 0.1);
+      if (to == null && from != null) to = from + 0.1;
+      if (from == null || to == null) continue;
+      const y = top + (from * pxPerM);
+      const h = Math.max(6, (to - from) * pxPerM);
+      const fill = pickMaterialColor(layer.bs5930?.primary || layer.material);
+      addRect(svg, colX, y, colW, h, fill, "#666");
+      const label = layer.bs5930?.description || layer.description || layer.material || "Layer";
+      const midY = y + (h / 2) + 4;
+      addLine(svg, colX + colW, midY - 4, colX + colW + 8, midY - 4, "#666", 1);
+      addText(svg, colX + colW + 12, midY, label, { "font-size": "10", fill: "#222" });
+    }
+
+    // Samples
+    for (const s of state.log.samples) {
+      const depth = isFiniteNumber(s.depth) ? s.depth : (isFiniteNumber(s.from) ? s.from : null);
+      if (!isFiniteNumber(depth)) continue;
+      const y = top + (depth * pxPerM);
+      const x = colX + colW + 6;
+      const size = 6;
+      const points = `${x},${y} ${x + size},${y - size} ${x + size},${y + size}`;
+      addPolygon(svg, points, "#2f7ed8", "#1c5ea6");
+      const label = "S: " + [s.id, s.type].filter(Boolean).join(" ");
+      addText(svg, x + size + 6, y + 4, label, { "font-size": "10", fill: "#1c5ea6" });
+    }
+
+    // Water
+    for (const w of state.log.water) {
+      const depth = isFiniteNumber(w.depth) ? w.depth : (isFiniteNumber(w.from) ? w.from : null);
+      if (!isFiniteNumber(depth) && w.condition === "dry") {
+        addText(svg, colX + colW + 12, top + 12, "W: dry", { "font-size": "10", fill: "#0077b6" });
+        continue;
+      }
+      if (!isFiniteNumber(depth)) continue;
+      const y = top + (depth * pxPerM);
+      addLine(svg, colX, y, colX + colW, y, "#0077b6", 2);
+      const label = "W: " + (w.condition || "noted");
+      addText(svg, colX + colW + 12, y + 4, label, { "font-size": "10", fill: "#0077b6" });
+    }
+
+    // Tests
+    for (const t of state.log.tests) {
+      const depth = isFiniteNumber(t.depth) ? t.depth : (isFiniteNumber(t.from) ? t.from : null);
+      if (!isFiniteNumber(depth)) continue;
+      const y = top + (depth * pxPerM);
+      const x = colX + colW + 6;
+      const size = 6;
+      const points = `${x + size},${y} ${x + size * 2},${y + size} ${x + size},${y + size * 2} ${x},${y + size}`;
+      addPolygon(svg, points, "#f4a261", "#c06a1a");
+      const label = "T: " + [t.type, t.result].filter(Boolean).join(" ");
+      addText(svg, x + size * 2 + 6, y + size + 4, label, { "font-size": "10", fill: "#c06a1a" });
+    }
+  }
+
+  function setEditMode(active) {
+    const isEditing = Boolean(active);
+    $("btnConfirm").textContent = isEditing ? "Update entry" : "Confirm entry";
+    $("btnCancelEdit").disabled = !isEditing;
+  }
+
+  function entrySummary(entry, index) {
+    const type = entry.entry_type || entry.parsed?.entry_type || entry.mode || "note";
+    if (type === "mixed") {
+      const items = entry.parsed?.items || entry.items || [];
+      if (!items.length) return `#${index + 1} mixed (0 items)`;
+      const counts = { strata: 0, sample: 0, water: 0, test: 0, note: 0 };
+      const depths = [];
+      for (const item of items) {
+        const itemType = item?.entry_type || "note";
+        if (counts[itemType] != null) counts[itemType] += 1;
+        if (itemType === "strata") {
+          const layers = item.layers || (item.layer ? [item.layer] : []);
+          for (const l of layers) {
+            if (isFiniteNumber(l.from)) depths.push(l.from);
+            if (isFiniteNumber(l.to)) depths.push(l.to);
+          }
+        } else if (itemType === "sample") {
+          const list = item.samples || (item.sample ? [item.sample] : []);
+          for (const s of list) {
+            if (isFiniteNumber(s.depth)) depths.push(s.depth);
+            if (isFiniteNumber(s.from)) depths.push(s.from);
+            if (isFiniteNumber(s.to)) depths.push(s.to);
+          }
+        } else if (itemType === "water") {
+          const list = item.waters || (item.water ? [item.water] : []);
+          for (const w of list) {
+            if (isFiniteNumber(w.depth)) depths.push(w.depth);
+            if (isFiniteNumber(w.from)) depths.push(w.from);
+            if (isFiniteNumber(w.to)) depths.push(w.to);
+          }
+        } else if (itemType === "test") {
+          const list = item.tests || (item.test ? [item.test] : []);
+          for (const t of list) {
+            if (isFiniteNumber(t.depth)) depths.push(t.depth);
+            if (isFiniteNumber(t.from)) depths.push(t.from);
+            if (isFiniteNumber(t.to)) depths.push(t.to);
+          }
+        }
+      }
+      const countParts = Object.entries(counts).filter(([, v]) => v > 0).map(([k, v]) => `${k}:${v}`);
+      const span = depths.length ? formatDepthRange(Math.min(...depths), Math.max(...depths)) : "?-? m";
+      return `#${index + 1} mixed (${countParts.join(", ") || ("items: " + items.length)}) ${span}`.trim();
+    }
+    if (type === "strata") {
+      const layers = entry.parsed?.layers || (entry.parsed?.layer ? [entry.parsed.layer] : []);
+      const depth = entry.parsed?.depth || {};
+      const primaries = layers.map(l => l.bs5930?.primary || l.material).filter(Boolean);
+      return `#${index + 1} strata (${layers.length || 1} layer${layers.length === 1 ? "" : "s"}), ${formatDepthRange(depth.from, depth.to)}: ${primaries.join(", ")}`;
+    }
+    if (type === "sample") {
+      const items = entry.parsed?.samples || (entry.parsed?.sample ? [entry.parsed.sample] : (entry.sample ? [entry.sample] : []));
+      const depths = items.map(s => s.depth ?? s.from ?? s.to).filter(isFiniteNumber);
+      const span = depths.length ? formatDepthRange(Math.min(...depths), Math.max(...depths)) : "?-? m";
+      return `#${index + 1} sample (${items.length || 1}) ${span}`.trim();
+    }
+    if (type === "water") {
+      const items = entry.parsed?.waters || (entry.parsed?.water ? [entry.parsed.water] : (entry.water ? [entry.water] : []));
+      const depths = items.map(w => w.depth ?? w.from ?? w.to).filter(isFiniteNumber);
+      const span = depths.length ? formatDepthRange(Math.min(...depths), Math.max(...depths)) : "?-? m";
+      return `#${index + 1} water (${items.length || 1}) ${span}`.trim();
+    }
+    if (type === "test") {
+      const items = entry.parsed?.tests || (entry.parsed?.test ? [entry.parsed.test] : (entry.test ? [entry.test] : []));
+      const depths = items.map(t => t.depth ?? t.from ?? t.to).filter(isFiniteNumber);
+      const span = depths.length ? formatDepthRange(Math.min(...depths), Math.max(...depths)) : "?-? m";
+      return `#${index + 1} test (${items.length || 1}) ${span}`.trim();
+    }
+    return `#${index + 1} note ${entry.raw || ""}`.trim();
+  }
+
+  function renderEntryList() {
+    const el = $("entryList");
+    if (!el) return;
+    el.innerHTML = "";
+    if (!state.entries.length) {
+      const d = document.createElement("div");
+      d.className = "review-muted";
+      d.textContent = "No confirmed entries yet.";
+      el.appendChild(d);
+      return;
+    }
+    state.entries.forEach((entry, index) => {
+      const row = document.createElement("div");
+      row.className = "card";
+      row.style.padding = "8px";
+      const summary = document.createElement("div");
+      summary.textContent = entrySummary(entry, index);
+      const actions = document.createElement("div");
+      actions.className = "row3";
+      actions.style.marginTop = "6px";
+      const btnEdit = document.createElement("button");
+      btnEdit.type = "button";
+      btnEdit.textContent = "Edit";
+      btnEdit.addEventListener("click", () => {
+        state.editIndex = index;
+        const typeValue = entry.entry_type === "mixed" ? "auto" : (entry.entry_type || "auto");
+        $("entryType").value = typeValue;
+        $("txtTranscript").value = entry.raw || "";
+        analyzeRules();
+        setEditMode(true);
+        setDiag("Editing entry #" + (index + 1) + ". Adjust the transcript and re-analyze.");
+      });
+      const btnDelete = document.createElement("button");
+      btnDelete.type = "button";
+      btnDelete.textContent = "Delete";
+      btnDelete.addEventListener("click", () => {
+        state.entries.splice(index, 1);
+        rebuildLogFromEntries();
+        $("entries").textContent = JSON.stringify(state.entries, null, 2);
+        renderEntryList();
+        setEditMode(false);
+      });
+      actions.appendChild(btnEdit);
+      actions.appendChild(btnDelete);
+      row.appendChild(summary);
+      row.appendChild(actions);
+      el.appendChild(row);
+    });
+  }
+
+  function rebuildLogFromEntries() {
+    const holeId = state.log.hole_id;
+    state.log = { hole_id: holeId, strata: [], samples: [], water: [], tests: [], notes: [] };
+    for (const entry of state.entries) applyEntryToLog(entry);
+    renderLogData();
+    renderLog();
+  }
+
+  function applyEntryToLog(entry) {
+    const type = entry.entry_type || entry.parsed?.entry_type;
+    if (!type) return;
+    if (type === "mixed") {
+      const items = entry.parsed?.items || entry.items || [];
+      for (const item of items) {
+        if (!item || item.entry_type === "mixed") continue;
+        applyEntryToLog({
+          ...entry,
+          entry_type: item.entry_type,
+          parsed: item,
+          raw: item.raw || entry.raw
+        });
+      }
+      return;
+    }
+    if (type === "strata") {
+      const layers = entry.parsed?.layers || entry.layers || (entry.parsed?.layer ? [entry.parsed.layer] : []);
+      for (const l of layers) {
+        if (l.from == null && l.to == null) continue;
+        const bs = l.bs5930 || buildBS5930({
+          raw: l.raw || entry.raw || "",
+          materials: guessMaterial(l.raw || entry.raw || ""),
+          qualifiers: detectQualifiers(l.raw || entry.raw || "")
+        });
+        const stratum = {
+          id: "L" + (state.log.strata.length + 1),
+          from: l.from,
+          to: l.to,
+          material: l.material || bs.primary || "UNKNOWN",
+          description: bs.description,
+          bs5930: bs,
+          raw: l.raw || entry.raw,
+          confidence: l.confidence ?? null,
+          inferred_from_context: l.inferred_from_context ?? false,
+          timestamp: entry.timestamp || entry.confirmed_at
+        };
+        const inferred = inferLayerBounds(stratum, state.log);
+        stratum.from = inferred.from;
+        stratum.to = inferred.to;
+        stratum.inferred_from_context = stratum.inferred_from_context || inferred.inferred;
+        state.log.strata.push(stratum);
+      }
+    } else if (type === "sample") {
+      const items = entry.parsed?.samples || (entry.parsed?.sample ? [entry.parsed.sample] : (entry.sample ? [entry.sample] : []));
+      for (const s of items) {
+        if (!s) continue;
+        const sample = {
+          id: s.id || ("S" + (state.log.samples.length + 1)),
+          depth: s.depth ?? (s.to ?? s.from ?? null),
+          from: s.from ?? null,
+          to: s.to ?? null,
+          type: s.type || null,
+          raw: s.raw || entry.raw,
+          timestamp: entry.timestamp || entry.confirmed_at
+        };
+        state.log.samples.push(sample);
+      }
+    } else if (type === "water") {
+      const items = entry.parsed?.waters || (entry.parsed?.water ? [entry.parsed.water] : (entry.water ? [entry.water] : []));
+      for (const w of items) {
+        if (!w) continue;
+        const water = {
+          id: "W" + (state.log.water.length + 1),
+          depth: w.depth ?? (w.to ?? w.from ?? null),
+          from: w.from ?? null,
+          to: w.to ?? null,
+          condition: w.condition || null,
+          remark: w.remark || null,
+          time_minutes: w.time_minutes ?? null,
+          raw: w.raw || entry.raw,
+          timestamp: entry.timestamp || entry.confirmed_at
+        };
+        state.log.water.push(water);
+      }
+    } else if (type === "test") {
+      const items = entry.parsed?.tests || (entry.parsed?.test ? [entry.parsed.test] : (entry.test ? [entry.test] : []));
+      for (const t of items) {
+        if (!t) continue;
+        const test = {
+          id: "T" + (state.log.tests.length + 1),
+          depth: t.depth ?? (t.to ?? t.from ?? null),
+          from: t.from ?? null,
+          to: t.to ?? null,
+          type: t.type || null,
+          result: t.result || null,
+          raw: t.raw || entry.raw,
+          timestamp: entry.timestamp || entry.confirmed_at
+        };
+        state.log.tests.push(test);
+      }
+    } else if (type === "note") {
+      const n = entry.parsed?.note || { text: entry.raw };
+      state.log.notes.push({
+        id: "N" + (state.log.notes.length + 1),
+        text: n.text || entry.raw,
+        raw: entry.raw,
+        timestamp: entry.timestamp || entry.confirmed_at
+      });
+    }
+  }
+
+  // Confirm/export: confirm current entry and update the log
+  function confirmEntry() {
+    if (!state.current) return;
+
+    const entry = {
+      confirmed_at: new Date().toISOString(),
+      ...state.current
+    };
+
+    if (state.editIndex !== null) {
+      state.entries[state.editIndex] = entry;
+      state.editIndex = null;
+      setEditMode(false);
+      rebuildLogFromEntries();
+    } else {
+      state.entries.push(entry);
+      applyEntryToLog(entry);
+    }
+    $("entries").textContent = JSON.stringify(state.entries, null, 2);
+    renderEntryList();
+    renderLogData();
+    renderLog();
+    $("btnExport").disabled = state.entries.length === 0;
+    debug("Entry confirmed. Total entries: " + state.entries.length);
+  }
+
+  function exportJSON() {
+    const payload = { entries: state.entries, log: state.log };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "voice-logging-log.json";
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+    debug("Export triggered.");
+  }
+
+  // ---------------- Voice capture ----------------
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let rec = null;
+  let micStream = null;
+  let audioCtx = null;
+  let analyser = null;
+  let analyserData = null;
+  let meterRaf = null;
+  let micTestActive = false;
+  let speechResultTimer = null;
+  let lastSpeechResultAt = null;
+
+  function stopMicMeter(resetStatus = true) {
+    if (meterRaf) cancelAnimationFrame(meterRaf);
+    meterRaf = null;
+    analyserData = null;
+    analyser = null;
+    if (audioCtx) {
+      audioCtx.close().catch(() => {});
+      audioCtx = null;
+    }
+    if (micStream) {
+      micStream.getTracks().forEach((t) => t.stop());
+      micStream = null;
+    }
+    setMicLevel(0);
+    if (resetStatus) setMicStatus("Mic: idle");
+    micTestActive = false;
+  }
+
+  function startMicMeter(stream) {
+    if (!stream) return;
+    stopMicMeter();
+    micStream = stream;
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      audioCtx = new Ctx();
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 1024;
+      analyserData = new Uint8Array(analyser.fftSize);
+      const source = audioCtx.createMediaStreamSource(stream);
+      source.connect(analyser);
+      audioCtx.resume().catch(() => {});
+      const loop = () => {
+        if (!analyser || !analyserData) return;
+        analyser.getByteTimeDomainData(analyserData);
+        let sum = 0;
+        for (let i = 0; i < analyserData.length; i++) {
+          const v = (analyserData[i] - 128) / 128;
+          sum += v * v;
+        }
+        const rms = Math.sqrt(sum / analyserData.length);
+        const pct = Math.min(100, Math.round(rms * 220));
+        setMicLevel(pct);
+        meterRaf = requestAnimationFrame(loop);
+      };
+      loop();
+      setMicStatus("Mic: live");
+    } catch (e) {
+      debug("Mic meter failed: " + (e?.message || e));
+      setMicStatus("Mic: meter error");
+    }
+  }
+
+  async function preflightMicPermission(keepStream = false) {
+    if (!navigator.mediaDevices?.getUserMedia) return { ok: false, reason: "getUserMedia unavailable" };
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (!keepStream) {
+        stream.getTracks().forEach(t => t.stop());
+        return { ok: true };
+      }
+      return { ok: true, stream };
+    } catch (e) {
+      return { ok: false, reason: e?.name || String(e) };
+    }
+  }
+
+  function armSpeechWatchdog() {
+    if (speechResultTimer) clearTimeout(speechResultTimer);
+    lastSpeechResultAt = null;
+    speechResultTimer = setTimeout(() => {
+      if (!lastSpeechResultAt) {
+        setDiag("No speech results received. Try Chrome/Edge and a secure context (https or http://localhost).");
+        debug("Speech watchdog: no results.");
+      }
+    }, 6000);
+  }
+
+  async function toggleMicTest() {
+    if (micTestActive) {
+      stopMicMeter();
+      $("btnMicTest").textContent = "Mic test";
+      return;
+    }
+    setMicStatus("Mic: testing");
+    const mic = await preflightMicPermission(true);
+    if (!mic.ok) {
+      setMicStatus("Mic: blocked");
+      setDiag("Microphone permission failed (" + mic.reason + ").");
+      debug("Mic test failed: " + mic.reason);
+      return;
+    }
+    startMicMeter(mic.stream);
+    micTestActive = true;
+    $("btnMicTest").textContent = "Stop mic";
+  }
+
+  function setupRecognizer() {
+    const r = new SpeechRecognition();
+    r.lang = "en-GB";
+    r.continuous = true;
+    r.interimResults = true;
+    r.maxAlternatives = 1;
+    return r;
+  }
+
+  async function startVoice() {
+    setDiag("");
+    debug("Start voice clicked.");
+    if (!SpeechRecognition) {
+      setStatus("Voice not supported");
+      setDiag("SpeechRecognition API not available in this browser.");
+      debug("SpeechRecognition not available.");
+      setMicStatus("Mic: unsupported");
+      return;
+    }
+    setStatus("requesting mic permission.");
+    setMicStatus("Mic: requesting permission");
+    const mic = await preflightMicPermission();
+    if (!mic.ok) {
+      setStatus("mic blocked");
+      setDiag("Microphone permission failed (" + mic.reason + "). If you opened via file://, try http://localhost.");
+      debug("Mic permission failed: " + mic.reason);
+      setMicStatus("Mic: blocked");
+      return;
+    }
+    if (micTestActive) {
+      stopMicMeter(false);
+      $("btnMicTest").textContent = "Mic test";
+    }
+    setStatus("starting recognition.");
+    setMicStatus("Mic: starting recognition");
+    setMicLevel(10);
+    if (!rec) rec = setupRecognizer();
+
+    let finalText = $("txtTranscript").value.trim();
+    rec.onresult = (event) => {
+      let interim = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const res = event.results[i];
+        if (res.isFinal) {
+          finalText += (finalText ? " " : "") + res[0].transcript.trim();
+          debug("Speech final: " + res[0].transcript.trim());
+        }
+        else interim += res[0].transcript;
+      }
+      lastSpeechResultAt = Date.now();
+      if (speechResultTimer) {
+        clearTimeout(speechResultTimer);
+        speechResultTimer = null;
+      }
+      $("txtTranscript").value = (finalText + (interim ? " " + interim.trim() : "")).trim();
+    };
+    rec.onstart = () => { setStatus("listening."); setMicStatus("Mic: listening"); setMicLevel(20); debug("Speech started."); };
+    rec.onaudiostart = () => { setMicStatus("Mic: audio detected"); setMicLevel(30); debug("Speech audio start."); };
+    rec.onsoundstart = () => { setMicStatus("Mic: sound detected"); setMicLevel(40); debug("Speech sound start."); };
+    rec.onspeechstart = () => { setMicStatus("Mic: speech detected"); setMicLevel(80); debug("Speech speech start."); };
+    rec.onspeechend = () => { setMicStatus("Mic: speech ended"); setMicLevel(30); debug("Speech speech end."); };
+    rec.onaudioend = () => { setMicStatus("Mic: audio ended"); setMicLevel(10); debug("Speech audio end."); };
+    rec.onerror = (e) => {
+      setStatus("Voice error: " + (e.error || "unknown"));
+      setDiag("Speech error: " + (e.error || "unknown"));
+      debug("Speech error: " + (e.error || "unknown"));
+    };
+    rec.onend = () => {
+      $("btnStart").disabled = false;
+      $("btnStop").disabled = true;
+      setStatus("idle");
+      stopMicMeter();
+      if (speechResultTimer) {
+        clearTimeout(speechResultTimer);
+        speechResultTimer = null;
+      }
+      debug("Speech ended.");
+    };
+
+    $("btnStart").disabled = true;
+    $("btnStop").disabled = false;
+    try {
+      armSpeechWatchdog();
+      rec.start();
+    } catch (e) {
+      $("btnStart").disabled = false;
+      $("btnStop").disabled = true;
+      setStatus("could not start");
+      setDiag("rec.start() failed (" + (e?.name || e) + ").");
+      debug("rec.start() failed: " + (e?.name || e));
+      if (speechResultTimer) {
+        clearTimeout(speechResultTimer);
+        speechResultTimer = null;
+      }
+      stopMicMeter();
+    }
+  }
+
+  function stopVoice() {
+    if (rec) rec.stop();
+    if (speechResultTimer) {
+      clearTimeout(speechResultTimer);
+      speechResultTimer = null;
+    }
+    stopMicMeter();
+    $("btnMicTest").textContent = "Mic test";
+    debug("Stop voice clicked.");
+  }
+
+  function clearAll() {
+    $("txtTranscript").value = "";
+    $("out").textContent = "{}";
+    $("pills").innerHTML = "";
+    $("prompts").innerHTML = "";
+    const review = $("review");
+    if (review) {
+      review.textContent = "Nothing to review yet.";
+      review.className = "review-muted";
+    }
+    $("btnConfirm").disabled = true;
+    state.current = null;
+    state.editIndex = null;
+    setEditMode(false);
+    setDiag("");
+    setStatus("idle");
+    renderLogData();
+    renderLog();
+    debug("Cleared.");
+  }
+
+  // ---------------- Wire up ----------------
+  function wire() {
+    debug("Wiring events…");
+    $("btnStart").addEventListener("click", startVoice);
+    $("btnStop").addEventListener("click", stopVoice);
+    $("btnMicTest").addEventListener("click", toggleMicTest);
+    $("btnAnalyze").addEventListener("click", analyzeBest);
+    $("btnConfirm").addEventListener("click", confirmEntry);
+    $("btnExport").addEventListener("click", exportJSON);
+    $("btnClear").addEventListener("click", clearAll);
+    $("btnUseLocal").addEventListener("click", () => cancelAiRun("AI: canceled (local used)"));
+    $("btnCancelAI").addEventListener("click", () => cancelAiRun("AI: canceled"));
+    $("btnCancelEdit").addEventListener("click", () => {
+      state.editIndex = null;
+      setEditMode(false);
+      setDiag("");
+      renderReview(state.current?.parsed || null);
+    });
+
+    $("btnLoadLLM").addEventListener("click", loadLLM);
+    $("btnEnableRemote").addEventListener("click", enableRemote);
+    $("btnDisableRemote").addEventListener("click", disableRemote);
+    $("remoteModel").addEventListener("change", (e) => {
+      remoteState.model = (e.target.value || remoteState.model).trim();
+      if (remoteState.enabled) setRemoteStatus("enabled (" + remoteState.model + ")");
+    });
+    $("remoteBase").addEventListener("input", (e) => {
+      remoteState.baseUrl = normalizeApiBase(e.target.value) || remoteState.baseUrl;
+    });
+    $("holeId").value = state.log.hole_id;
+    $("holeId").addEventListener("input", (e) => {
+      state.log.hole_id = normalizeText(e.target.value) || "EH1";
+      renderLogData();
+      renderLog();
+    });
+
+    debug("Wired. Ready.");
+    setStatus("idle");
+    renderLogData();
+    renderLog();
+    renderEntryList();
+
+    // Quick capability note
+    if (!("gpu" in navigator)) {
+      debug("Note: WebGPU not detected. WebLLM may not run on this device/browser.");
+    } else {
+      debug("WebGPU detected: good sign for WebLLM.");
+    }
+  }
+
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", wire);
+  else wire();
+</script>
+</body>
+</html>
+
+
+
+
+
+
+
