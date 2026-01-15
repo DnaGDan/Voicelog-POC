@@ -3,10 +3,10 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Voice-first Geo Logging PoC (v4 - In-browser LLM)</title>
+  <title>Voice-first Geo Logging PoC (v4)</title>
   <style>
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 16px; }
-    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; }
+    .row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 12px; align-items: start; }
     .stack { display: grid; gap: 12px; align-content: start; }
     .card { border: 1px solid #ddd; border-radius: 12px; padding: 12px; }
     button { padding: 10px 12px; border-radius: 10px; border: 1px solid #ccc; background: #f7f7f7; cursor: pointer; }
@@ -39,10 +39,10 @@
     .review-badge { display:inline-block; padding:2px 6px; border-radius: 6px; border:1px solid #ccc; font-size:11px; }
     .chat-thread { border: 1px solid #eee; border-radius: 12px; padding: 12px; background: #fff; display: flex; flex-direction: column; gap: 10px; max-height: 360px; overflow-y: auto; }
     .chat-message { display: flex; }
-    .chat-message.user { justify-content: flex-end; }
+    .chat-message.user { justify-content: flex-start; }
     .chat-message.assistant { justify-content: flex-start; }
     .chat-bubble { max-width: 75%; padding: 8px 10px; border-radius: 12px; white-space: pre-wrap; }
-    .chat-message.user .chat-bubble { background: #111; color: #fff; border-radius: 12px 12px 4px 12px; }
+    .chat-message.user .chat-bubble { background: #111; color: #fff; border-radius: 12px 12px 12px 4px; }
     .chat-message.assistant .chat-bubble { background: #f2f2f2; color: #111; border: 1px solid #e0e0e0; border-radius: 12px 12px 12px 4px; }
     .chat-empty { color: #666; font-size: 13px; }
     .chat-thread + textarea { margin-top: 8px; }
@@ -53,24 +53,11 @@
 <body>
   <h2>Voice-first Geo Logging PoC (v4)</h2>
   <p class="muted">
-    This version can run an LLM <em>in your browser</em> using WebLLM. No API keys, no auth.
-    The price you pay is performance: first load can be hundreds of MB and Android phones vary wildly.
+    This version can use an online LLM with an API key, or fall back to rules-only parsing.
   </p>
 
   <div class="card" style="margin-bottom:12px;">
-    <h3>0) LLM options</h3>
-    <div class="row3" style="margin-bottom:8px;">
-      <label class="small" for="modelSel"><strong>Local model</strong></label>
-      <select id="modelSel">
-        <option value="Phi-3-mini-4k-instruct-q4f16_1-MLC">Phi-3-mini (fast-ish, decent)</option>
-        <option value="Llama-3.2-1B-Instruct-q4f16_1-MLC">Llama 3.2 1B (small)</option>
-        <option value="Llama-3.1-8B-Instruct-q4f16_1-MLC">Llama 3.1 8B (big, slow)</option>
-      </select>
-      <button id="btnLoadLLM" class="primary" type="button">Load local LLM</button>
-    </div>
-    <div class="muted" id="llmStatus">Local LLM: not loaded</div>
-    <div class="small" id="llmProgress"></div>
-    <hr style="border:none; border-top:1px solid #eee; margin:10px 0;">
+    <h3>0) Online LLM</h3>
     <div class="row3" style="margin-bottom:8px;">
       <label class="small" for="remoteModel"><strong>Online model</strong></label>
       <select id="remoteModel">
@@ -147,7 +134,6 @@
       <div class="row3" style="margin-bottom:8px;">
         <div class="progress" aria-label="AI analysis progress"><div id="aiProgress" class="progress-fill"></div></div>
         <div class="small" id="aiStatus">AI: idle</div>
-        <button id="btnUseLocal" type="button" disabled>Use local</button>
         <button id="btnCancelAI" type="button" disabled>Cancel AI</button>
       </div>
 
@@ -198,7 +184,6 @@
   </div>
 
 <script type="module">
-  import { CreateMLCEngine } from "https://esm.run/@mlc-ai/web-llm";
 
   const $ = (id) => document.getElementById(id);
   const debug = (msg) => {
@@ -378,9 +363,7 @@
     if (!running) el.style.width = "0%";
   };
   const setAiButtons = (enabled) => {
-    const useLocal = $("btnUseLocal");
     const cancelAI = $("btnCancelAI");
-    if (useLocal) useLocal.disabled = !enabled;
     if (cancelAI) cancelAI.disabled = !enabled;
   };
   const beginAiRun = () => {
@@ -1247,7 +1230,7 @@
     while ((m = reM.exec(t)) !== null) {
       markers.push({ depth: parseFloat(m[1]), index: m.index });
     }
-    const reAt = /\b(?:at|depth|@|around|approx(?:imately)?|about)\s+(\d+(?:\.\d+)?)(?!\s*(?:m|metres|meters))\b/gi;
+    const reAt = /\b(?:at|depth|@|around|approx(?:imately)?|about)\s+(\d+(?:\.\d+)?)(?!\.\d)(?!\s*(?:m|metres|meters))\b/gi;
     while ((m = reAt.exec(t)) !== null) {
       markers.push({ depth: parseFloat(m[1]), index: m.index });
     }
@@ -1876,15 +1859,23 @@
     if (key && state.chat.some((m) => m.key === key)) return;
     const last = state.chat[state.chat.length - 1];
     if (!key && last && last.role === role && last.text === cleaned) return;
+    const messageRole = role || "assistant";
     state.chat.push({
       id: "C" + (state.chat.length + 1),
-      role: role || "assistant",
+      role: messageRole,
       text: cleaned,
       timestamp: options.timestamp || new Date().toISOString(),
       kind: options.kind || null,
       key
     });
     renderChat();
+    if (messageRole === "assistant") {
+      const transcript = $("txtTranscript");
+      if (transcript) {
+        transcript.value = "";
+        transcript.focus();
+      }
+    }
   }
 
   function clearChat() {
@@ -2203,20 +2194,15 @@
     const draftParsed = state.current?.parsed || null;
     const noteDraft = hasPendingFollowups && draftParsed ? state.current : null;
     const hasRemote = remoteState.enabled && remoteState.apiKey;
-    const hasLocal = Boolean(engine);
-    const canAI = hasRemote || hasLocal;
+    const canAI = hasRemote;
 
     if (noteDraft) {
       appendChatMessage("user", raw, { kind: "user" });
       aiState.lastLocal = state.current;
-      if (draftParsed.entry_type === "strata" && canAI) {
+      if (draftParsed.entry_type === "strata" && hasRemote) {
         aiState.requestId += 1;
         beginAiRun();
-        if (hasRemote) {
-          aiInterpretLayersOnline({ raw, requestId: aiState.requestId, followup: true });
-          return;
-        }
-        aiInterpretLayers({ raw, requestId: aiState.requestId, followup: true });
+        aiInterpretLayersOnline({ raw, requestId: aiState.requestId, followup: true });
         return;
       }
       const updated = applyFollowupToCurrent(raw);
@@ -2254,14 +2240,10 @@
     const baseType = baseParsed?.entry_type || "note";
 
     if (entryTypeOverride !== "auto") {
-      if (entryTypeOverride === "strata" && canAI) {
+      if (entryTypeOverride === "strata" && hasRemote) {
         aiState.requestId += 1;
         beginAiRun();
-        if (hasRemote) {
-          aiInterpretLayersOnline({ raw, requestId: aiState.requestId });
-          return;
-        }
-        aiInterpretLayers({ raw, requestId: aiState.requestId });
+        aiInterpretLayersOnline({ raw, requestId: aiState.requestId });
         return;
       }
       const prompts = state.current?.prompts || [];
@@ -2292,9 +2274,7 @@
     aiState.requestId += 1;
     beginAiRun();
     const requestId = aiState.requestId;
-    const classify = hasRemote
-      ? await aiClassifyEntryTypeOnline({ raw, requestId })
-      : await aiClassifyEntryTypeLocal({ raw, requestId });
+    const classify = await aiClassifyEntryTypeOnline({ raw, requestId });
 
     if (requestId !== aiState.requestId || aiState.canceled) {
       endAiRun("AI: canceled");
@@ -2303,11 +2283,7 @@
 
     const aiType = normalizeEntryType(classify?.entry_type);
     if (aiType === "strata") {
-      if (hasRemote) {
-        aiInterpretLayersOnline({ raw, requestId });
-        return;
-      }
-      aiInterpretLayers({ raw, requestId });
+      aiInterpretLayersOnline({ raw, requestId });
       return;
     }
     if (aiType) {
@@ -2327,27 +2303,18 @@
       appendFollowupChatMessage(followups);
       $("btnConfirm").disabled = raw.length === 0;
       if (hasRemote) setRemoteStatus("ready (" + remoteState.model + ")");
-      if (hasLocal) setLLMStatus("ready");
       endAiRun("AI: ready (" + parsed.entry_type + ")");
       return;
     }
 
     if (baseType === "strata") {
-      if (hasRemote) {
-        aiInterpretLayersOnline({ raw, requestId });
-        return;
-      }
-      aiInterpretLayers({ raw, requestId });
+      aiInterpretLayersOnline({ raw, requestId });
       return;
     }
     endAiRun("AI: idle");
   }
 
-  // ---------------- LLM integration (WebLLM) ----------------
-  let engine = null;
-
-  function setLLMStatus(msg) { $("llmStatus").textContent = "Local LLM: " + msg; }
-  function setLLMProgress(msg) { $("llmProgress").textContent = msg || ""; }
+  // ---------------- LLM integration (online) ----------------
   const normalizeApiBase = (url) => (url || "").trim().replace(/\/+$/, "");
   const setRemoteButtons = (enabled) => {
     const btnEnable = $("btnEnableRemote");
@@ -2383,33 +2350,6 @@
     setRemoteStatus("disabled");
     updateTranscribeStatus();
   };
-
-  async function loadLLM() {
-    const modelId = $("modelSel").value;
-    setLLMStatus("loading " + modelId + "…");
-    setLLMProgress("If this hangs, your device may not support WebGPU or is low on memory.");
-    debug("Loading LLM model: " + modelId);
-
-    try {
-      engine = await CreateMLCEngine(modelId, {
-        initProgressCallback: (p) => {
-          // p: {progress, timeElapsed, text}
-          const pct = Math.round((p.progress ?? 0) * 100);
-          setLLMProgress((p.text ? p.text + " " : "") + (isFinite(pct) ? (pct + "%") : ""));
-        }
-      });
-      setLLMStatus("loaded (" + modelId + ")");
-      setLLMProgress("");
-      setAiStatus("AI: idle");
-      debug("LLM loaded.");
-    } catch (e) {
-      engine = null;
-      setLLMStatus("failed to load");
-      setLLMProgress("Error: " + (e?.message || e));
-      setAiStatus("AI: unavailable");
-      debug("LLM load failed: " + (e?.message || e));
-    }
-  }
 
   function extractJSON(text) {
     // Try to find JSON object in the response (with or without code fences).
@@ -2909,34 +2849,6 @@ Rules:
     }
   }
 
-  async function aiClassifyEntryTypeLocal(options = {}) {
-    const raw = normalizeText(options.raw || $("txtTranscript").value);
-    const requestId = options.requestId ?? null;
-    if (!raw || !engine) return null;
-    setLLMStatus("thinking.");
-    setAiStatus("AI: classifying");
-    debug("AI classify (local) started at " + new Date().toISOString());
-    const { system, user } = buildTypePrompt(raw);
-    try {
-      const res = await engine.chat.completions.create({
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: user }
-        ],
-        temperature: 0,
-        max_tokens: 120
-      });
-      const text = res?.choices?.[0]?.message?.content || "";
-      debug("Local AI classify response: " + text.slice(0, 200));
-      if (requestId !== null && requestId !== aiState.requestId) return null;
-      if (aiState.canceled) return null;
-      return parseEntryTypeResponse(text);
-    } catch (e) {
-      debug("Local AI classify failed: " + (e?.message || e));
-      return null;
-    }
-  }
-
   async function aiInterpretLayersOnline(options = {}) {
     const raw = normalizeText(options.raw || $("txtTranscript").value);
     const requestId = options.requestId ?? null;
@@ -3112,158 +3024,6 @@ Rules:
       setDiag("Online AI failed: " + msg + hint);
       endAiRun(e?.name === "AbortError" ? "AI: canceled" : "AI: error");
       debug("Online AI interpret failed: " + msg);
-    }
-  }
-
-  async function aiInterpretLayers(options = {}) {
-    if (!engine) {
-      setLLMStatus("not loaded");
-      setAiStatus("AI: not loaded");
-      return;
-    }
-    const raw = normalizeText(options.raw || $("txtTranscript").value);
-    const requestId = options.requestId ?? null;
-    if (!raw) {
-      setDiag("Type or dictate something first.");
-      return;
-    }
-
-    setLLMStatus("thinking.");
-    debug("AI interpret clicked at " + new Date().toISOString());
-    const { system, user } = buildAiPrompt(raw);
-
-    try {
-      const res = await engine.chat.completions.create({
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: user }
-        ],
-        temperature: 0,
-        max_tokens: 512
-      });
-
-      const text = res?.choices?.[0]?.message?.content || "";
-      debug("AI raw response: " + text.slice(0, 500) + (text.length > 500 ? "." : ""));
-
-      const jsonStr = extractJSON(text);
-      if (!jsonStr) throw new Error("Could not find JSON in model response.");
-
-      const obj = JSON.parse(jsonStr);
-      if (requestId !== null && requestId !== aiState.requestId) {
-        debug("AI result ignored (superseded).");
-        return;
-      }
-      if (aiState.canceled) {
-        debug("AI result ignored (canceled).");
-        endAiRun("AI: canceled");
-        return;
-      }
-      const questions = normalizeQuestions(obj.questions);
-      const hasLayers = Array.isArray(obj.layers) && obj.layers.length;
-      if (!Array.isArray(obj.layers)) {
-        if (questions.length) {
-          setPendingFollowups(questions);
-          renderFollowups(questions);
-          appendFollowupChatMessage(questions);
-          const fallback = aiState.lastLocal || state.current;
-          if (fallback) {
-            state.current = { ...fallback, ai_questions: questions };
-            $("out").textContent = JSON.stringify(state.current, null, 2);
-            renderPillsFromParsed(state.current.parsed);
-            renderPrompts(state.current.prompts || []);
-            renderReview(state.current.parsed);
-          }
-          $("btnConfirm").disabled = true;
-          setDiag("AI needs clarification. Answer the follow-up question(s) and re-analyze.");
-          endAiRun("AI: waiting on follow-up");
-          return;
-        }
-        throw new Error("JSON missing 'layers' array.");
-      }
-      if (!hasLayers) {
-        if (questions.length) {
-          setPendingFollowups(questions);
-          renderFollowups(questions);
-          appendFollowupChatMessage(questions);
-          const fallback = aiState.lastLocal || state.current;
-          if (fallback) {
-            state.current = { ...fallback, ai_questions: questions };
-            $("out").textContent = JSON.stringify(state.current, null, 2);
-            renderPillsFromParsed(state.current.parsed);
-            renderPrompts(state.current.prompts || []);
-            renderReview(state.current.parsed);
-          }
-          $("btnConfirm").disabled = true;
-          setDiag("AI needs clarification. Answer the follow-up question(s) and re-analyze.");
-          endAiRun("AI: waiting on follow-up");
-          return;
-        }
-        throw new Error("JSON returned no layers.");
-      }
-
-      let mappedLayers = applyRuleInferences(mapAiLayers(obj.layers), raw);
-      const followupActive = getPendingFollowups().length > 0 && state.current?.parsed?.entry_type === "strata";
-      if (followupActive) {
-        const baseLayers = state.current?.parsed?.layers || (state.current?.parsed?.layer ? [state.current.parsed.layer] : []);
-        if (baseLayers.length) mappedLayers = mergeFollowupLayers(mappedLayers, baseLayers);
-      }
-      const explicitId = extractHorizonId(raw);
-      if (explicitId && mappedLayers.length) {
-        mappedLayers[0].id = mappedLayers[0].id || explicitId;
-        mappedLayers[0].explicit_id = true;
-      }
-      const froms = mappedLayers.map(l => l.from).filter(isFiniteNumber);
-      const tos = mappedLayers.map(l => l.to).filter(isFiniteNumber);
-      const minFrom = froms.length ? Math.min(...froms) : null;
-      const maxTo = tos.length ? Math.max(...tos) : null;
-      const parsed = {
-        entry_type: "strata",
-        layers: mappedLayers,
-        depth: { from: minFrom, to: maxTo, basis: "ai layers" }
-      };
-
-      const prompts = buildPrompts(parsed);
-      for (const [i, l] of mappedLayers.entries()) {
-        if ((typeof l.confidence === "number" && l.confidence < 0.7) || l.inferred_from_context) {
-          prompts.push({
-            level: "warn",
-            text: `Layer ${l.id || (i + 1)} needs confirmation (confidence ${l.confidence ?? "?"}).`
-          });
-        }
-      }
-      const followups = normalizeQuestions([...questions, ...buildFollowupQuestions(prompts)]);
-      setPendingFollowups(followups);
-
-      // Store in state and show in output panel
-      const entryRaw = followupActive ? mergeDraftRaw(state.current?.raw, raw) : raw;
-      state.current = {
-        mode: "ai",
-        timestamp: new Date().toISOString(),
-        raw: entryRaw,
-        entry_type: "strata",
-        parsed,
-        ai_layers: obj.layers,
-        ai_questions: followups,
-        prompts
-      };
-
-      $("out").textContent = JSON.stringify(state.current, null, 2);
-      renderPillsFromParsed(parsed);
-      renderReview(parsed);
-      renderFollowups(followups);
-      renderPrompts(prompts);
-      appendAssistantSummary(parsed);
-      appendFollowupChatMessage(followups);
-
-      $("btnConfirm").disabled = false;
-      setLLMStatus("ready");
-      endAiRun("AI: ready");
-      debug("AI interpret completed.");
-    } catch (e) {
-      setLLMStatus("error");
-      setDiag("AI interpret failed: " + (e?.message || e));
-      endAiRun("AI: error");
-      debug("AI interpret failed: " + (e?.message || e));
     }
   }
 
@@ -3865,6 +3625,11 @@ Rules:
     $("btnExport").disabled = state.entries.length === 0;
     debug("Entry confirmed. Total entries: " + state.entries.length);
     schedulePersist("confirm");
+    const transcript = $("txtTranscript");
+    if (transcript) {
+      transcript.value = "";
+      transcript.focus();
+    }
   }
 
   function exportJSON() {
@@ -4354,7 +4119,6 @@ Rules:
     $("btnExport").addEventListener("click", exportJSON);
     $("btnClear").addEventListener("click", clearAll);
     $("btnClearDb").addEventListener("click", clearDatabase);
-    $("btnUseLocal").addEventListener("click", () => cancelAiRun("AI: canceled (local used)"));
     $("btnCancelAI").addEventListener("click", () => cancelAiRun("AI: canceled"));
     $("btnCancelEdit").addEventListener("click", () => {
       state.editIndex = null;
@@ -4363,7 +4127,6 @@ Rules:
       renderReview(state.current?.parsed || null);
     });
 
-    $("btnLoadLLM").addEventListener("click", loadLLM);
     $("btnEnableRemote").addEventListener("click", enableRemote);
     $("btnDisableRemote").addEventListener("click", disableRemote);
     const remoteModelEl = $("remoteModel");
@@ -4401,12 +4164,6 @@ Rules:
       renderChat();
     });
 
-    // Quick capability note
-    if (!("gpu" in navigator)) {
-      debug("Note: WebGPU not detected. WebLLM may not run on this device/browser.");
-    } else {
-      debug("WebGPU detected: good sign for WebLLM.");
-    }
   }
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", wire);
